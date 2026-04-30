@@ -3410,9 +3410,16 @@
     // Wheelchair should stop earlier than minimum collision clearance so it has maneuver room.
     const MANEUVER_STOP_CLEARANCE_M = Math.max(
       REPLAN_MIN_CLEARANCE_M + 0.45,
-      WHEELCHAIR_BODY_WIDTH_M * 3
+      WHEELCHAIR_BODY_WIDTH_M * 2
     );
+    // Hysteresis for stop decisions: avoid freeze when sensor values hover near threshold.
+    const MANEUVER_STOP_HYSTERESIS_M = 0.12;
     const OBSTACLE_BLOCK_RADIUS_M = 0.46;
+    // Path replan keepout around detected objects: at least one full wheelchair width.
+    const DETECTED_OBJECT_PATH_CLEARANCE_M = Math.max(
+      WHEELCHAIR_BODY_WIDTH_M,
+      OBSTACLE_BLOCK_RADIUS_M
+    );
     const CANDIDATE_RISK_WEIGHT = 3.5;
     let replanBusy = false;
     let lastReplanTime = 0;
@@ -3450,6 +3457,19 @@
       };
     }
 
+    function isPointAheadOfWheelchair(point, maxHalfAngleDeg) {
+      if (!point || !robotGroup) return true;
+      const dx = point.x - robotGroup.position.x;
+      const dz = point.z - robotGroup.position.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 1e-6) return true;
+      const fx = Math.sin(robotGroup.rotation.y || 0);
+      const fz = Math.cos(robotGroup.rotation.y || 0);
+      const cosA = (dx * fx + dz * fz) / d;
+      const minCos = Math.cos(THREE.MathUtils.degToRad(maxHalfAngleDeg || 80));
+      return cosA >= minCos;
+    }
+
     function shouldStopAndReplanNow(scan, stepMeters) {
       if (!moveState || !scan) return null;
       const near = scan.nearest;
@@ -3474,12 +3494,14 @@
         near && typeof near.distance === "number" && Number.isFinite(near.distance)
           ? near.distance
           : Infinity;
+      const nearAhead = !!(near && near.point && isPointAheadOfWheelchair(near.point, 80));
+      const nearDistAhead = nearAhead ? nearDist : Infinity;
       const fwd = scan.forwardClearanceM;
       // If sensors say we're far from obstacles, avoid hard-stop on conservative geometric
       // predictor alone (prevents deadlock loops at dist=0 while replanning is busy).
       const noUrgentObstacleBySensor =
-        nearDist > MANEUVER_STOP_CLEARANCE_M + 0.35 &&
-        (fwd == null || fwd > MANEUVER_STOP_CLEARANCE_M + 0.25);
+        nearDistAhead > MANEUVER_STOP_CLEARANCE_M - MANEUVER_STOP_HYSTERESIS_M &&
+        (fwd == null || fwd > MANEUVER_STOP_CLEARANCE_M - MANEUVER_STOP_HYSTERESIS_M);
       if (!segmentWalkableRobust(curr.x, curr.z, next.x, next.z)) {
         if (!noUrgentObstacleBySensor) {
           return "Predicted corner/body collision on next step";
@@ -3490,7 +3512,11 @@
           return "Next segment too tight for wheelchair";
         }
       }
-      if (fwd != null && fwd <= MANEUVER_STOP_CLEARANCE_M) {
+      const hardStopClearance = Math.max(
+        REPLAN_MIN_CLEARANCE_M,
+        MANEUVER_STOP_CLEARANCE_M - MANEUVER_STOP_HYSTERESIS_M
+      );
+      if (fwd != null && fwd <= hardStopClearance) {
         // Inside a doorway, ray-based forward clearance can collapse to near-zero on frames/door jambs.
         // Avoid deadlock: if geometric path checks above are safe, allow passing through the door zone.
         if (nearInDoorZone) {
@@ -3504,7 +3530,7 @@
         if (gap == null || gap < safeGap) {
           return (
             "Obstacle within maneuver stop clearance " +
-            `(fwd=${fmtNum(fwd)}m <= ${fmtNum(MANEUVER_STOP_CLEARANCE_M)}m, ` +
+            `(fwd=${fmtNum(fwd)}m <= ${fmtNum(hardStopClearance)}m, ` +
             `gap=${fmtNum(gap)}m, safeGap=${fmtNum(safeGap)}m)`
           );
         }
@@ -3519,11 +3545,17 @@
         near && typeof near.distance === "number" && Number.isFinite(near.distance)
           ? near.distance
           : Infinity;
+      const nearAhead = !!(near && near.point && isPointAheadOfWheelchair(near.point, 80));
+      const nearDistAhead = nearAhead ? nearDist : Infinity;
       const fwd = scan.forwardClearanceM;
       const gap = scan.forwardPassageWidthM;
       const safeGap = WHEELCHAIR_BODY_WIDTH_M + WHEELCHAIR_SIDE_SAFETY_M;
-      if (nearDist <= MANEUVER_STOP_CLEARANCE_M) return true;
-      if (fwd != null && fwd <= MANEUVER_STOP_CLEARANCE_M && gap != null && gap < safeGap) {
+      const hardStopClearance = Math.max(
+        REPLAN_MIN_CLEARANCE_M,
+        MANEUVER_STOP_CLEARANCE_M - MANEUVER_STOP_HYSTERESIS_M
+      );
+      if (nearDistAhead <= hardStopClearance) return true;
+      if (fwd != null && fwd <= hardStopClearance && gap != null && gap < safeGap) {
         return true;
       }
       return false;
@@ -3675,7 +3707,10 @@
             ? d.distance
             : 2;
         const scale = Math.max(0.82, Math.min(1.28, 1.12 - dist * 0.018));
-        const r = Math.min(0.75, Math.max(0.3, OBSTACLE_BLOCK_RADIUS_M * scale));
+        const r = Math.max(
+          DETECTED_OBJECT_PATH_CLEARANCE_M,
+          Math.min(0.75, Math.max(0.3, OBSTACLE_BLOCK_RADIUS_M * scale))
+        );
         markDynamicObstacleDisk(px, pz, r);
         n++;
       }
@@ -3723,7 +3758,7 @@
       const dynBlocked = Array.from(
         new Set(Array.from(dynamicObstacleCells).concat(Array.from(vlaDynamicObstacleCells)))
       );
-      const halfWidth = Math.max(0.18, WHEELCHAIR_BODY_WIDTH_M * 0.5);
+      const objectKeepout = DETECTED_OBJECT_PATH_CLEARANCE_M;
       function buildPayload(blockedKeys) {
         return {
           bounds: OUTER_BOUNDS,
@@ -3745,9 +3780,9 @@
             doorCount: NAV_DOORS.length,
             source: "robot-index-map",
           },
-          // Enforce object keepout >= half wheelchair width.
-          min_keepout_m: halfWidth,
-          detection_base_radius: Math.max(OBSTACLE_BLOCK_RADIUS_M, halfWidth),
+          // Enforce object keepout >= full wheelchair width from detected objects.
+          min_keepout_m: objectKeepout,
+          detection_base_radius: objectKeepout,
           // NOTE: blocked_cells already encode wall clearance, and detections encode object keepout.
           // Setting an additional min_clearance_m here double-counts clearance and can create no-path.
           min_clearance_m: 0.0,
@@ -3794,7 +3829,7 @@
             const relaxed = Object.assign({}, buildPayload(staticNavBlockedKeysCache || []), {
               dynamic_blocked_cells: [],
               novelty_weight: 0.2,
-              detection_base_radius: Math.max(0.28, OBSTACLE_BLOCK_RADIUS_M * 0.78),
+              detection_base_radius: Math.max(objectKeepout, OBSTACLE_BLOCK_RADIUS_M * 0.78),
               max_alternatives: 6,
             });
             return fetchPlan(relaxed).then(function (r2) {
@@ -3853,9 +3888,9 @@
       tryCandidate("base");
 
       const radii = [
-        OBSTACLE_BLOCK_RADIUS_M,
-        OBSTACLE_BLOCK_RADIUS_M + 0.16,
-        OBSTACLE_BLOCK_RADIUS_M + 0.3,
+        DETECTED_OBJECT_PATH_CLEARANCE_M,
+        DETECTED_OBJECT_PATH_CLEARANCE_M + 0.16,
+        DETECTED_OBJECT_PATH_CLEARANCE_M + 0.3,
       ];
       const lateralOffsets = [-0.55, -0.32, 0.32, 0.55];
       const forwardOffsets = [0.0, 0.28, 0.55];
@@ -3960,9 +3995,9 @@
           const li = parseInt(m[2], 10);
           const fi = parseInt(m[3], 10);
           const radii2 = [
-            OBSTACLE_BLOCK_RADIUS_M,
-            OBSTACLE_BLOCK_RADIUS_M + 0.16,
-            OBSTACLE_BLOCK_RADIUS_M + 0.3,
+            DETECTED_OBJECT_PATH_CLEARANCE_M,
+            DETECTED_OBJECT_PATH_CLEARANCE_M + 0.16,
+            DETECTED_OBJECT_PATH_CLEARANCE_M + 0.3,
           ];
           const lateralOffsets2 = [-0.55, -0.32, 0.32, 0.55];
           const forwardOffsets2 = [0.0, 0.28, 0.55];
@@ -3972,7 +4007,7 @@
           markDynamicObstacleDisk(ox, oz, Math.max(0.22, radii2[ri] * 0.7));
         }
       } else {
-        markDynamicObstacleDisk(near.point.x, near.point.z, OBSTACLE_BLOCK_RADIUS_M);
+        markDynamicObstacleDisk(near.point.x, near.point.z, DETECTED_OBJECT_PATH_CLEARANCE_M);
       }
 
       lastReplanTime = performance.now();
@@ -4071,7 +4106,7 @@
       replanStartedAtMs = performance.now();
       const snapDyn = Array.from(dynamicObstacleCells);
       const detMarked = markDynamicObstaclesFromSensorDetections(scan);
-      markDynamicObstacleDisk(near.point.x, near.point.z, OBSTACLE_BLOCK_RADIUS_M);
+      markDynamicObstacleDisk(near.point.x, near.point.z, DETECTED_OBJECT_PATH_CLEARANCE_M);
       if (detMarked > 0) {
         logFrameEvent("replan-sensor-keepout", { markedRoots: detMarked });
       }
