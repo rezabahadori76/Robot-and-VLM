@@ -595,6 +595,10 @@
     const WALL_PATH_CLEARANCE_RELAXED_M = Math.max(0.2, WALL_PATH_CLEARANCE_M - 0.08);
     // Strict keepout rule: maintain roughly one wheelchair width from obstacles.
     const WHEELCHAIR_OBJECT_KEEP_DISTANCE_M = NAV_CLEAR_HALF + WHEELCHAIR_BODY_WIDTH_M;
+    const EMERGENCY_OBJECT_CLEARANCE_M = Math.max(
+      NAV_CLEAR_HALF + 0.18,
+      WHEELCHAIR_OBJECT_KEEP_DISTANCE_M * 0.82
+    );
     const navClearanceCellCache = new Map();
     const wallClearanceCellCache = new Map();
     const navObjectRaycaster = new THREE.Raycaster();
@@ -779,12 +783,30 @@
       return cellHasWallClearance(i, j, WALL_PATH_CLEARANCE_M);
     }
 
+    /** Static occupancy for server-side map planner (walls + clearance; no dynamic cells). */
+    function collectStaticNavBlockedKeys() {
+      const keys = [];
+      for (let i = 0; i < nx; i++) {
+        for (let j = 0; j < nz; j++) {
+          if (!cellWalkable(i, j) || !cellHasWallClearance(i, j, WALL_PATH_CLEARANCE_M)) {
+            keys.push(i + "," + j);
+          }
+        }
+      }
+      return keys;
+    }
+
     // Emergency map walkability: relaxed but still keeps wall/boundary clearance.
     function cellWalkableEmergency(i, j) {
       const w = cellToWorld(i, j);
       if (isBlocked(w.x, w.z)) return false;
       if (dynamicObstacleCells.has(`${i},${j}`)) return false;
-      return cellHasWallClearance(i, j, WALL_PATH_CLEARANCE_RELAXED_M);
+      if (!cellHasWallClearance(i, j, WALL_PATH_CLEARANCE_RELAXED_M)) return false;
+      return hasWheelchairObjectClearanceAt(
+        w.x,
+        w.z,
+        EMERGENCY_OBJECT_CLEARANCE_M
+      );
     }
 
     function markDynamicObstacleDisk(wx, wz, radiusM) {
@@ -1304,10 +1326,10 @@
     });
 
     const ROBOT_HOUSE = {
-      version: 5,
+      version: 6,
       unit: "m",
       description:
-        "4 rooms + corridor; door-graph pathfinding + grid stitch. Wheelchair camera sensor (ray-based object detection) for clearance / future replanning.",
+        "4 rooms + corridor; door-graph Dijkstra + grid A* in-browser; optional Python weighted A* on the same occupancy map via POST /api/plan (serve_robot.py). Ray-based wheelchair camera for clearance and replan triggers.",
       bounds: OUTER_BOUNDS,
       footprint: FOOTPRINT_POLY,
       plan: PLAN,
@@ -1332,7 +1354,13 @@
       /** Filled after Three.js scene + wheelchairCameraSensor init */
       wheelchairCameraSensor: null,
     };
-    try { window.ROBOT_HOUSE = ROBOT_HOUSE; } catch (e) {}
+    try {
+      window.ROBOT_HOUSE = ROBOT_HOUSE;
+    } catch (e) {}
+    ROBOT_HOUSE.mapPlanner = {
+      collectStaticNavBlockedKeys: collectStaticNavBlockedKeys,
+      plannerEndpoint: "/api/plan",
+    };
 
     // --- Three.js scene
     const wrap = document.getElementById("canvas-wrap");
@@ -1342,7 +1370,7 @@
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     // Slightly brighter global exposure so wheel camera is readable in dark corners.
-    renderer.toneMappingExposure = 1.22;
+    renderer.toneMappingExposure = 1.34;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.setClearColor(0x0b1118);
@@ -1351,7 +1379,7 @@
     const scene = new THREE.Scene();
     scene.fog = new THREE.Fog(0x0b1118, 24, 64);
     const clock = new THREE.Clock();
-    const APP_BUILD_ID = "2026-04-30-map-replan-v8-wall-clearance";
+    const APP_BUILD_ID = "2026-04-30-map-replan-v10-python-map-planner";
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
     const VIEW_SPLIT = 0.56; // left: main view, right: wheelchair camera (wider right pane)
     /** One VLA inference ↔ one discrete step along the yellow path (meters of arc length). */
@@ -1545,9 +1573,9 @@
       { passive: false }
     );
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.54));
-    scene.add(new THREE.HemisphereLight(0xd7e3ff, 0x4d3f35, 0.38));
-    const dir = new THREE.DirectionalLight(0xfff6ea, 1.05);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.66));
+    scene.add(new THREE.HemisphereLight(0xd7e3ff, 0x4d3f35, 0.48));
+    const dir = new THREE.DirectionalLight(0xfff6ea, 1.28);
     dir.position.set(11, 18, 9);
     dir.castShadow = true;
     dir.shadow.mapSize.set(2048, 2048);
@@ -1559,10 +1587,10 @@
     dir.shadow.camera.bottom = -18;
     dir.shadow.bias = -0.00015;
     scene.add(dir);
-    const fill = new THREE.DirectionalLight(0xbfd4ff, 0.28);
+    const fill = new THREE.DirectionalLight(0xbfd4ff, 0.4);
     fill.position.set(-9, 10, -7);
     scene.add(fill);
-    const warmBounce = new THREE.PointLight(0xffd7b3, 0.3, 24, 2);
+    const warmBounce = new THREE.PointLight(0xffd7b3, 0.42, 26, 2);
     warmBounce.position.set(0.2, 2.2, 0.4);
     scene.add(warmBounce);
 
@@ -2736,7 +2764,7 @@
     scene.add(robotGroup);
     robotGroup.add(wheelCam);
     // Wheelchair headlight: improves local visibility for wheelchair camera in low-light areas.
-    const wheelHeadLight = new THREE.SpotLight(0xffffff, 1.35, 14, Math.PI / 5.5, 0.42, 1.6);
+    const wheelHeadLight = new THREE.SpotLight(0xffffff, 1.7, 16, Math.PI / 5.3, 0.4, 1.5);
     wheelHeadLight.position.set(0, 1.0, 0.2);
     wheelHeadLight.target.position.set(0, 0.85, -2.2);
     wheelHeadLight.castShadow = false;
@@ -3094,6 +3122,7 @@
       lastPathFlat = null;
       pathCurveSamples = null;
       dynamicObstacleCells.clear();
+      wallClearanceCellCache.clear();
       if (typeof wheelchairCameraSensor !== "undefined") {
         wheelchairCameraSensor.resetAlertLatch();
       }
@@ -3112,6 +3141,19 @@
     let replanBusy = false;
     let lastReplanTime = 0;
     const REPLAN_COOLDOWN_MS = 900;
+    let pendingForcedReplanScan = null;
+    let pendingForcedReplanQueued = false;
+
+    function _finishReplan() {
+      replanBusy = false;
+      if (!pendingForcedReplanQueued || !pendingForcedReplanScan) return;
+      const queued = pendingForcedReplanScan;
+      pendingForcedReplanScan = null;
+      pendingForcedReplanQueued = false;
+      requestAnimationFrame(function () {
+        tryReplanAroundDetectedObstacle(queued, { force: true });
+      });
+    }
 
     function pathPointAtDistance(samples, lenInfo, distAlong) {
       const { cum, total } = lenInfo;
@@ -3278,6 +3320,31 @@
       };
     }
 
+    /**
+     * Blocks grid cells under each camera-sensor detection (per scene root) so A-star and
+     * path candidates route around what was seen, not only the single nearest hit.
+     */
+    function markDynamicObstaclesFromSensorDetections(scan) {
+      if (!scan || !scan.detections || !scan.detections.length) return 0;
+      let n = 0;
+      for (let i = 0; i < scan.detections.length; i++) {
+        const d = scan.detections[i];
+        if (!d || !d.point) continue;
+        if (d.mesh && meshIgnoredForNavClearance(d.mesh)) continue;
+        const px = d.point.x;
+        const pz = d.point.z;
+        const dist =
+          typeof d.distance === "number" && Number.isFinite(d.distance)
+            ? d.distance
+            : 2;
+        const scale = Math.max(0.82, Math.min(1.28, 1.12 - dist * 0.018));
+        const r = Math.min(0.75, Math.max(0.3, OBSTACLE_BLOCK_RADIUS_M * scale));
+        markDynamicObstacleDisk(px, pz, r);
+        n++;
+      }
+      return n;
+    }
+
     function _buildEmergencyAstarCandidate(si, gi) {
       const gridPath = astarGrid4(si.i, si.j, gi.i, gi.j, cellWalkableEmergency);
       if (!gridPath || gridPath.length < 2) return null;
@@ -3300,12 +3367,252 @@
       };
     }
 
+    function tryPythonMapPlannerFirst(scan, sx, sz, gx, gz, onFallback) {
+      const detPayload = [];
+      if (scan && scan.detections) {
+        for (let i = 0; i < scan.detections.length; i++) {
+          const d = scan.detections[i];
+          if (!d || !d.point) continue;
+          if (d.mesh && meshIgnoredForNavClearance(d.mesh)) continue;
+          detPayload.push({
+            distance: d.distance,
+            point: { x: d.point.x, z: d.point.z },
+          });
+        }
+      }
+      const payload = {
+        bounds: OUTER_BOUNDS,
+        cell_size: CELL,
+        start: { x: sx, z: sz },
+        goal: { x: gx, z: gz },
+        blocked_cells: collectStaticNavBlockedKeys(),
+        detections: detPayload,
+        detection_base_radius: OBSTACLE_BLOCK_RADIUS_M,
+        compress_path: true,
+      };
+      const ac = new AbortController();
+      const tid = setTimeout(function () {
+        ac.abort();
+      }, 4500);
+      fetch("/api/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: ac.signal,
+      })
+        .then(function (r) {
+          clearTimeout(tid);
+          if (!r.ok) throw new Error("http " + r.status);
+          return r.json();
+        })
+        .then(function (res) {
+          if (!res || !res.ok || !res.path || res.path.length < 2) {
+            onFallback();
+            return;
+          }
+          const asPoly = res.path.map(function (p) {
+            return { x: p.x, z: p.z };
+          });
+          asPoly[0] = { x: sx, z: sz };
+          const expanded = expandPathThroughGrid(asPoly, cellWalkableNav);
+          if (!expanded || expanded.length < 2) {
+            onFallback();
+            return;
+          }
+          lastReplanTime = performance.now();
+          applyNewPathFromPolyline(
+            expanded,
+            res.how ||
+              "Python map planner: weighted A* on occupancy grid + client-side corridor refine."
+          );
+          logFrameEvent("replan-python", {
+            waypoints: expanded.length,
+            markedDetections: res.markedDetections,
+            algorithm: res.algorithm || "astar-weighted-corridor",
+          });
+          logFrameEvent("replan", "success tag=python-map-planner");
+          _finishReplan();
+        })
+        .catch(function (err) {
+          clearTimeout(tid);
+          logFrameEvent("replan-python-skip", {
+            reason: err && err.message ? err.message : String(err),
+          });
+          onFallback();
+        });
+    }
+
+    function runBrowserReplanCandidates(
+      scan,
+      snapDyn,
+      near,
+      si,
+      gi,
+      sx,
+      sz,
+      gx,
+      gz,
+      lx,
+      lz,
+      fx,
+      fz
+    ) {
+      const candidates = [];
+      function tryCandidate(tag) {
+        const c = _buildMapPathCandidate(si, gi);
+        if (!c) return;
+        c.tag = tag;
+        candidates.push(c);
+      }
+
+      tryCandidate("base");
+
+      const radii = [
+        OBSTACLE_BLOCK_RADIUS_M,
+        OBSTACLE_BLOCK_RADIUS_M + 0.16,
+        OBSTACLE_BLOCK_RADIUS_M + 0.3,
+      ];
+      const lateralOffsets = [-0.55, -0.32, 0.32, 0.55];
+      const forwardOffsets = [0.0, 0.28, 0.55];
+      for (let ri = 0; ri < radii.length; ri++) {
+        for (let li = 0; li < lateralOffsets.length; li++) {
+          for (let fi = 0; fi < forwardOffsets.length; fi++) {
+            _restoreDynamicCells(snapDyn);
+            markDynamicObstaclesFromSensorDetections(scan);
+            const ox = near.point.x + lx * lateralOffsets[li] + fx * forwardOffsets[fi];
+            const oz = near.point.z + lz * lateralOffsets[li] + fz * forwardOffsets[fi];
+            markDynamicObstacleDisk(near.point.x, near.point.z, radii[ri]);
+            markDynamicObstacleDisk(ox, oz, Math.max(0.22, radii[ri] * 0.7));
+            tryCandidate(`r${ri}-l${li}-f${fi}`);
+          }
+        }
+      }
+
+      if (!candidates.length) {
+        _restoreDynamicCells(snapDyn);
+        markDynamicObstaclesFromSensorDetections(scan);
+        const emergency = _buildEmergencyAstarCandidate(si, gi);
+        if (emergency && emergency.points && emergency.points.length >= 2) {
+          lastReplanTime = performance.now();
+          applyNewPathFromPolyline(
+            emergency.points,
+            "Stable fallback route (A* emergency) to destination."
+          );
+          logFrameEvent("replan-emergency", {
+            mode: emergency.tag,
+            len: +emergency.length.toFixed(3),
+            risk: +emergency.risk.toFixed(3),
+            headingPenalty: +emergency.headingPenalty.toFixed(3),
+            score: +emergency.score.toFixed(3),
+            waypoints: emergency.points.length,
+          });
+          _finishReplan();
+          return;
+        }
+
+        const gRes = NAV.findPathDijkstra(sx, sz, gx, gz);
+        if (gRes && gRes.ok && gRes.points && gRes.points.length >= 2) {
+          const gPath = expandPathThroughGrid(gRes.points, cellWalkableEmergency);
+          if (gPath && gPath.length >= 2) {
+            lastReplanTime = performance.now();
+            applyNewPathFromPolyline(
+              gPath,
+              "Stable fallback route (graph+dijkstra) to destination."
+            );
+            logFrameEvent("replan-emergency", {
+              mode: "graph-dijkstra",
+              how: gRes.how || "dijkstra",
+              waypoints: gPath.length,
+            });
+            _finishReplan();
+            return;
+          }
+        }
+
+        const mid = _nudgePointAwayFromWalls(
+          (sx + gx) * 0.5,
+          (sz + gz) * 0.5,
+          WALL_PATH_CLEARANCE_RELAXED_M
+        );
+        const goalSafe = _nudgePointAwayFromWalls(gx, gz, WALL_PATH_CLEARANCE_RELAXED_M);
+        const forcedSeed = [{ x: sx, z: sz }, mid, goalSafe];
+        const forced = expandPathThroughGrid(forcedSeed, cellWalkableEmergency);
+        const forcedPath =
+          forced && forced.length >= 2
+            ? forced
+            : forcedSeed;
+        lastReplanTime = performance.now();
+        applyNewPathFromPolyline(
+          forcedPath,
+          "Forced destination route generated from current point."
+        );
+        logFrameEvent("replan-forced-destination", {
+          mode: "direct-stitch",
+          waypoints: forcedPath.length,
+        });
+        _finishReplan();
+        return;
+      }
+
+      candidates.sort(function (a, b) {
+        return a.score - b.score;
+      });
+      const best = candidates[0];
+      logFrameEvent("replan-candidates", {
+        count: candidates.length,
+        bestTag: best.tag,
+        bestScore: +best.score.toFixed(3),
+        bestLen: +best.length.toFixed(3),
+        bestRisk: +best.risk.toFixed(3),
+      });
+
+      _restoreDynamicCells(snapDyn);
+      markDynamicObstaclesFromSensorDetections(scan);
+      if (best.tag !== "base") {
+        const m = /r(\d+)-l(\d+)-f(\d+)/.exec(best.tag);
+        if (m) {
+          const ri = parseInt(m[1], 10);
+          const li = parseInt(m[2], 10);
+          const fi = parseInt(m[3], 10);
+          const radii2 = [
+            OBSTACLE_BLOCK_RADIUS_M,
+            OBSTACLE_BLOCK_RADIUS_M + 0.16,
+            OBSTACLE_BLOCK_RADIUS_M + 0.3,
+          ];
+          const lateralOffsets2 = [-0.55, -0.32, 0.32, 0.55];
+          const forwardOffsets2 = [0.0, 0.28, 0.55];
+          const ox = near.point.x + lx * lateralOffsets2[li] + fx * forwardOffsets2[fi];
+          const oz = near.point.z + lz * lateralOffsets2[li] + fz * forwardOffsets2[fi];
+          markDynamicObstacleDisk(near.point.x, near.point.z, radii2[ri]);
+          markDynamicObstacleDisk(ox, oz, Math.max(0.22, radii2[ri] * 0.7));
+        }
+      } else {
+        markDynamicObstacleDisk(near.point.x, near.point.z, OBSTACLE_BLOCK_RADIUS_M);
+      }
+
+      lastReplanTime = performance.now();
+      applyNewPathFromPolyline(
+        best.points,
+        "Map replan — best candidate (" + best.points.length + " waypoints)."
+      );
+      logFrameEvent(
+        "replan",
+        `success tag=${best.tag} waypoints=${best.points.length} score=${best.score.toFixed(3)}`
+      );
+      _finishReplan();
+    }
+
     // Deterministic only: random and speculative detour helpers were removed
     // to keep replanning stable, near, and obstacle-triggered.
 
     function tryReplanAroundDetectedObstacle(scan, opts) {
       const force = !!(opts && opts.force);
       if (replanBusy) {
+        if (force && scan) {
+          pendingForcedReplanScan = scan;
+          pendingForcedReplanQueued = true;
+          logFrameEvent("replan-queued", { reason: "busy", force: true });
+        }
         logFrameEvent("replan-skip", { reason: "busy" });
         return;
       }
@@ -3372,12 +3679,16 @@
         "replan",
         `triggered force=${force} near=${fmtNum(near.distance)}m fwd=${fmtNum(
           fwd
-        )}m gap=${fmtNum(scan.forwardPassageWidthM)}m`
+        )}m gap=${fmtNum(scan.forwardPassageWidthM)}m det=${scan.detections ? scan.detections.length : 0}`
       );
 
       replanBusy = true;
       const snapDyn = Array.from(dynamicObstacleCells);
+      const detMarked = markDynamicObstaclesFromSensorDetections(scan);
       markDynamicObstacleDisk(near.point.x, near.point.z, OBSTACLE_BLOCK_RADIUS_M);
+      if (detMarked > 0) {
+        logFrameEvent("replan-sensor-keepout", { markedRoots: detMarked });
+      }
 
       const sx = robotGroup.position.x;
       const sz = robotGroup.position.z;
@@ -3386,147 +3697,29 @@
       const si = worldToCell(sx, sz);
       const gi = worldToCell(gx, gz);
 
-      const candidates = [];
-      function tryCandidate(tag) {
-        const c = _buildMapPathCandidate(si, gi);
-        if (!c) return;
-        c.tag = tag;
-        candidates.push(c);
-      }
-
-      // Candidate A: current map state (already has near-point blocked)
-      tryCandidate("base");
-
-      // Candidate B..N: map-only alternatives by perturbing blocked zones around current obstacle.
       const yaw = robotGroup.rotation.y || 0;
       const fx = Math.sin(yaw);
       const fz = Math.cos(yaw);
       const lx = -fz;
       const lz = fx;
-      const radii = [OBSTACLE_BLOCK_RADIUS_M, OBSTACLE_BLOCK_RADIUS_M + 0.16, OBSTACLE_BLOCK_RADIUS_M + 0.3];
-      const lateralOffsets = [-0.55, -0.32, 0.32, 0.55];
-      const forwardOffsets = [0.0, 0.28, 0.55];
-      for (let ri = 0; ri < radii.length; ri++) {
-        for (let li = 0; li < lateralOffsets.length; li++) {
-          for (let fi = 0; fi < forwardOffsets.length; fi++) {
-            _restoreDynamicCells(snapDyn);
-            const ox = near.point.x + lx * lateralOffsets[li] + fx * forwardOffsets[fi];
-            const oz = near.point.z + lz * lateralOffsets[li] + fz * forwardOffsets[fi];
-            markDynamicObstacleDisk(near.point.x, near.point.z, radii[ri]);
-            markDynamicObstacleDisk(ox, oz, Math.max(0.22, radii[ri] * 0.7));
-            tryCandidate(`r${ri}-l${li}-f${fi}`);
-          }
-        }
-      }
 
-      if (!candidates.length) {
-        // Stable deterministic fallback #1: A* on geometry-only walkability.
-        _restoreDynamicCells(snapDyn);
-        const emergency = _buildEmergencyAstarCandidate(si, gi);
-        if (emergency && emergency.points && emergency.points.length >= 2) {
-          lastReplanTime = performance.now();
-          applyNewPathFromPolyline(
-            emergency.points,
-            "Stable fallback route (A* emergency) to destination."
-          );
-          logFrameEvent("replan-emergency", {
-            mode: emergency.tag,
-            len: +emergency.length.toFixed(3),
-            risk: +emergency.risk.toFixed(3),
-            headingPenalty: +emergency.headingPenalty.toFixed(3),
-            score: +emergency.score.toFixed(3),
-            waypoints: emergency.points.length,
-          });
-          replanBusy = false;
-          return;
-        }
-
-        // Stable deterministic fallback #2: graph + dijkstra route over room/door map.
-        const gRes = NAV.findPathDijkstra(sx, sz, gx, gz);
-        if (gRes && gRes.ok && gRes.points && gRes.points.length >= 2) {
-          const gPath = expandPathThroughGrid(gRes.points, cellWalkableEmergency);
-          if (gPath && gPath.length >= 2) {
-            lastReplanTime = performance.now();
-            applyNewPathFromPolyline(
-              gPath,
-              "Stable fallback route (graph+dijkstra) to destination."
-            );
-            logFrameEvent("replan-emergency", {
-              mode: "graph-dijkstra",
-              how: gRes.how || "dijkstra",
-              waypoints: gPath.length,
-            });
-            replanBusy = false;
-            return;
-          }
-        }
-
-        // Absolute guarantee: always design a destination route while keeping wall clearance preference.
-        const mid = _nudgePointAwayFromWalls(
-          (sx + gx) * 0.5,
-          (sz + gz) * 0.5,
-          WALL_PATH_CLEARANCE_RELAXED_M
+      tryPythonMapPlannerFirst(scan, sx, sz, gx, gz, function () {
+        runBrowserReplanCandidates(
+          scan,
+          snapDyn,
+          near,
+          si,
+          gi,
+          sx,
+          sz,
+          gx,
+          gz,
+          lx,
+          lz,
+          fx,
+          fz
         );
-        const goalSafe = _nudgePointAwayFromWalls(gx, gz, WALL_PATH_CLEARANCE_RELAXED_M);
-        const forcedSeed = [{ x: sx, z: sz }, mid, goalSafe];
-        const forced = expandPathThroughGrid(forcedSeed, cellWalkableEmergency);
-        const forcedPath =
-          forced && forced.length >= 2
-            ? forced
-            : forcedSeed;
-        lastReplanTime = performance.now();
-        applyNewPathFromPolyline(
-          forcedPath,
-          "Forced destination route generated from current point."
-        );
-        logFrameEvent("replan-forced-destination", {
-          mode: "direct-stitch",
-          waypoints: forcedPath.length,
-        });
-        replanBusy = false;
-        return;
-      }
-
-      candidates.sort(function (a, b) {
-        return a.score - b.score;
       });
-      const best = candidates[0];
-      logFrameEvent("replan-candidates", {
-        count: candidates.length,
-        bestTag: best.tag,
-        bestScore: +best.score.toFixed(3),
-        bestLen: +best.length.toFixed(3),
-        bestRisk: +best.risk.toFixed(3),
-      });
-
-      // Keep dynamic map state consistent with best candidate assumptions.
-      _restoreDynamicCells(snapDyn);
-      if (best.tag !== "base") {
-        // Reconstruct blocked zones for chosen variant.
-        const m = /r(\d+)-l(\d+)-f(\d+)/.exec(best.tag);
-        if (m) {
-          const ri = parseInt(m[1], 10);
-          const li = parseInt(m[2], 10);
-          const fi = parseInt(m[3], 10);
-          const ox = near.point.x + lx * lateralOffsets[li] + fx * forwardOffsets[fi];
-          const oz = near.point.z + lz * lateralOffsets[li] + fz * forwardOffsets[fi];
-          markDynamicObstacleDisk(near.point.x, near.point.z, radii[ri]);
-          markDynamicObstacleDisk(ox, oz, Math.max(0.22, radii[ri] * 0.7));
-        }
-      } else {
-        markDynamicObstacleDisk(near.point.x, near.point.z, OBSTACLE_BLOCK_RADIUS_M);
-      }
-
-      lastReplanTime = performance.now();
-      applyNewPathFromPolyline(
-        best.points,
-        "Map replan — best candidate (" + best.points.length + " waypoints)."
-      );
-      logFrameEvent(
-        "replan",
-        `success tag=${best.tag} waypoints=${best.points.length} score=${best.score.toFixed(3)}`
-      );
-      replanBusy = false;
     }
 
     function buildPathFromSelections(moveWheelchair) {
