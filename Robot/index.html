@@ -783,12 +783,13 @@
       return cellHasWallClearance(i, j, WALL_PATH_CLEARANCE_M);
     }
 
-    /** Static occupancy for server-side map planner (walls + clearance; no dynamic cells). */
+    /** Lightweight static occupancy for Python planner (no expensive object-ray clearance sweep). */
     function collectStaticNavBlockedKeys() {
       const keys = [];
       for (let i = 0; i < nx; i++) {
         for (let j = 0; j < nz; j++) {
-          if (!cellWalkable(i, j) || !cellHasWallClearance(i, j, WALL_PATH_CLEARANCE_M)) {
+          const w = cellToWorld(i, j);
+          if (isBlocked(w.x, w.z) || !cellHasWallClearance(i, j, WALL_PATH_CLEARANCE_M)) {
             keys.push(i + "," + j);
           }
         }
@@ -3367,7 +3368,7 @@
       };
     }
 
-    function tryPythonMapPlannerFirst(scan, sx, sz, gx, gz, onFallback) {
+    function tryPythonMapPlannerOnly(scan, sx, sz, gx, gz, onSuccess, onError) {
       const detPayload = [];
       if (scan && scan.detections) {
         for (let i = 0; i < scan.detections.length; i++) {
@@ -3375,70 +3376,98 @@
           if (!d || !d.point) continue;
           if (d.mesh && meshIgnoredForNavClearance(d.mesh)) continue;
           detPayload.push({
+            rootId: d.rootId || null,
+            rootName: d.root && d.root.name ? d.root.name : null,
+            meshName: d.mesh && d.mesh.name ? d.mesh.name : null,
             distance: d.distance,
             point: { x: d.point.x, z: d.point.z },
           });
         }
       }
-      const payload = {
+      const dynBlocked = Array.from(dynamicObstacleCells);
+      const basePayload = {
         bounds: OUTER_BOUNDS,
         cell_size: CELL,
         start: { x: sx, z: sz },
         goal: { x: gx, z: gz },
         blocked_cells: collectStaticNavBlockedKeys(),
+        dynamic_blocked_cells: dynBlocked,
         detections: detPayload,
+        sensor_context: {
+          nearestDistanceM: scan && scan.nearest ? scan.nearest.distance : null,
+          forwardClearanceM: scan ? scan.forwardClearanceM : null,
+          forwardPassageWidthM: scan ? scan.forwardPassageWidthM : null,
+          rayCount: scan && scan.rays ? scan.rays.length : 0,
+          scanTime: scan && scan.time ? scan.time : null,
+        },
+        map_context: {
+          roomCount: ROOMS.length,
+          doorCount: NAV_DOORS.length,
+          source: "robot-index-map",
+        },
         detection_base_radius: OBSTACLE_BLOCK_RADIUS_M,
+        algorithms: ["dijkstra", "astar", "weighted_astar", "astar_low_risk_bias"],
+        max_alternatives: 4,
+        avoid_paths: lastPathFlat && lastPathFlat.length >= 2 ? [lastPathFlat] : [],
+        novelty_weight: 0.46,
         compress_path: true,
       };
-      const ac = new AbortController();
-      const tid = setTimeout(function () {
-        ac.abort();
-      }, 4500);
-      fetch("/api/plan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        signal: ac.signal,
-      })
-        .then(function (r) {
-          clearTimeout(tid);
-          if (!r.ok) throw new Error("http " + r.status);
-          return r.json();
+      function fetchPlan(payload, timeoutMs) {
+        const ac = new AbortController();
+        const tid = setTimeout(function () {
+          ac.abort();
+        }, timeoutMs || 4500);
+        return fetch("/api/plan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: ac.signal,
         })
+          .then(function (r) {
+            clearTimeout(tid);
+            if (!r.ok) throw new Error("http " + r.status);
+            return r.json();
+          })
+          .finally(function () {
+            clearTimeout(tid);
+          });
+      }
+      fetchPlan(basePayload, 4500)
         .then(function (res) {
           if (!res || !res.ok || !res.path || res.path.length < 2) {
-            onFallback();
+            // Still Python-only: retry with relaxed-yet-valid planner params.
+            const relaxed = Object.assign({}, basePayload, {
+              dynamic_blocked_cells: [],
+              novelty_weight: 0.2,
+              detection_base_radius: Math.max(0.28, OBSTACLE_BLOCK_RADIUS_M * 0.78),
+              max_alternatives: 6,
+            });
+            return fetchPlan(relaxed, 4500).then(function (r2) {
+              if (!r2 || !r2.ok || !r2.path || r2.path.length < 2) {
+                const reason = (r2 && (r2.reason || r2.detail)) || (res && (res.reason || res.detail)) || "no-path-from-python";
+                throw new Error(reason);
+              }
+              return r2;
+            });
+          }
+          return res;
+        })
+        .then(function (goodRes) {
+          if (!goodRes || !goodRes.ok || !goodRes.path || goodRes.path.length < 2) {
+            if (onError) onError(new Error("no-path-from-python"));
             return;
           }
-          const asPoly = res.path.map(function (p) {
+          const asPoly = goodRes.path.map(function (p) {
             return { x: p.x, z: p.z };
           });
           asPoly[0] = { x: sx, z: sz };
-          const expanded = expandPathThroughGrid(asPoly, cellWalkableNav);
-          if (!expanded || expanded.length < 2) {
-            onFallback();
-            return;
-          }
-          lastReplanTime = performance.now();
-          applyNewPathFromPolyline(
-            expanded,
-            res.how ||
-              "Python map planner: weighted A* on occupancy grid + client-side corridor refine."
-          );
-          logFrameEvent("replan-python", {
-            waypoints: expanded.length,
-            markedDetections: res.markedDetections,
-            algorithm: res.algorithm || "astar-weighted-corridor",
-          });
-          logFrameEvent("replan", "success tag=python-map-planner");
-          _finishReplan();
+          if (onSuccess) onSuccess(asPoly, goodRes);
         })
         .catch(function (err) {
-          clearTimeout(tid);
           logFrameEvent("replan-python-skip", {
             reason: err && err.message ? err.message : String(err),
           });
-          onFallback();
+          if (onError) onError(err);
         });
     }
 
@@ -3694,32 +3723,35 @@
       const sz = robotGroup.position.z;
       const gx = endPoint.x;
       const gz = endPoint.z;
-      const si = worldToCell(sx, sz);
-      const gi = worldToCell(gx, gz);
-
-      const yaw = robotGroup.rotation.y || 0;
-      const fx = Math.sin(yaw);
-      const fz = Math.cos(yaw);
-      const lx = -fz;
-      const lz = fx;
-
-      tryPythonMapPlannerFirst(scan, sx, sz, gx, gz, function () {
-        runBrowserReplanCandidates(
-          scan,
-          snapDyn,
-          near,
-          si,
-          gi,
-          sx,
-          sz,
-          gx,
-          gz,
-          lx,
-          lz,
-          fx,
-          fz
-        );
-      });
+      tryPythonMapPlannerOnly(
+        scan,
+        sx,
+        sz,
+        gx,
+        gz,
+        function (pythonPath, meta) {
+          lastReplanTime = performance.now();
+          applyNewPathFromPolyline(
+            pythonPath,
+            (meta && meta.how) ||
+              "Python map planner only: route generated from path_planner.py"
+          );
+          logFrameEvent("replan-python", {
+            waypoints: pythonPath.length,
+            markedDetections: meta ? meta.markedDetections : 0,
+            algorithm: (meta && meta.algorithm) || "python-only",
+          });
+          logFrameEvent("replan", "success tag=python-only");
+          _finishReplan();
+        },
+        function (err) {
+          logFrameEvent("replan-failed", {
+            reason: err && err.message ? err.message : String(err),
+          });
+          setStatus("Python planner failed; no local fallback is allowed.");
+          _finishReplan();
+        }
+      );
     }
 
     function buildPathFromSelections(moveWheelchair) {
@@ -3741,57 +3773,55 @@
       const sz = startPoint.z;
       const gx = endPoint.x;
       const gz = endPoint.z;
-      let path = null;
-      let how = "none";
-      const gRes = NAV.findPathDijkstra(sx, sz, gx, gz);
-      if (gRes && gRes.ok && gRes.points && gRes.points.length >= 2) {
-        path = gRes.points;
-        how = gRes.how || "dijkstra";
-      }
-      if (!path) {
-        const a = worldToCell(sx, sz);
-        const b2 = worldToCell(gx, gz);
-        const gr = astarGrid4(a.i, a.j, b2.i, b2.j, cellWalkableNav);
-        if (gr && gr.length >= 2) {
-          path = expandPathThroughGrid(
-            gr.map(function (p) {
-              return { x: p.x, z: p.z };
-            }),
-            cellWalkableNav
+      setStatus("Planning route with Python map planner...");
+      tryPythonMapPlannerOnly(
+        null,
+        sx,
+        sz,
+        gx,
+        gz,
+        function (path, meta) {
+          if (!path || path.length < 2) {
+            setStatus("Python planner returned an invalid path.");
+            return;
+          }
+          lastPathFlat = path;
+          const pts = path.map((p) => new THREE.Vector3(p.x, FLOOR_Y + 0.12, p.z));
+          const curve = new THREE.CatmullRomCurve3(pts, false, "catmullrom", 0.2);
+          const tube = new THREE.TubeGeometry(
+            curve,
+            Math.max(8, pts.length * 3),
+            0.06,
+            8,
+            false
           );
-          how = "grid4";
+          const mat = new THREE.MeshStandardMaterial({ color: 0xd29922, emissive: 0x442200 });
+          pathLine = new THREE.Mesh(tube, mat);
+          // Keep route visible in top/orbit view, hidden from wheelchair camera.
+          pathLine.layers.set(PATH_LAYER);
+          scene.add(pathLine);
+          const samples = sampleCurvePoints(pts);
+          pathCurveSamples = samples;
+          const alg = meta && meta.algorithm ? meta.algorithm : "python-only";
+          if (moveWheelchair) {
+            startRobotAlongSamples(samples);
+            setStatus(`Moving… (python:${alg}, ${path.length} waypoints).`);
+          } else {
+            robotGroup.visible = false;
+            stopRobotAnim();
+            setStatus(
+              `Path shown (python:${alg}, ${path.length} waypoints). Press "Move wheelchair" to animate.`
+            );
+          }
+        },
+        function (err) {
+          setStatus(
+            "No path from Python planner (local JS planners disabled): " +
+              (err && err.message ? err.message : String(err)) +
+              ". Try moving start/end slightly or reducing nearby clutter."
+          );
         }
-      }
-      if (path && path.length >= 2) {
-        path = expandPathThroughGrid(path, cellWalkableNav);
-      }
-      if (!path || path.length < 2) {
-        setStatus("No path found between these rooms.");
-        return false;
-      }
-      lastPathFlat = path;
-      const pts = path.map((p) => new THREE.Vector3(p.x, FLOOR_Y + 0.12, p.z));
-      const curve = new THREE.CatmullRomCurve3(pts, false, "catmullrom", 0.2);
-      const tube = new THREE.TubeGeometry(curve, Math.max(8, pts.length * 3), 0.06, 8, false);
-      const mat = new THREE.MeshStandardMaterial({ color: 0xd29922, emissive: 0x442200 });
-      pathLine = new THREE.Mesh(tube, mat);
-      // Keep route visible in top/orbit view, hidden from wheelchair camera.
-      pathLine.layers.set(PATH_LAYER);
-      scene.add(pathLine);
-      const samples = sampleCurvePoints(pts);
-      pathCurveSamples = samples;
-      if (moveWheelchair) {
-        startRobotAlongSamples(samples);
-        setStatus(
-          `Moving… (${how}, ${path.length} waypoints).`
-        );
-      } else {
-        robotGroup.visible = false;
-        stopRobotAnim();
-        setStatus(
-          `Path shown (${how}, ${path.length} waypoints). Press "Move wheelchair" to animate.`
-        );
-      }
+      );
       return true;
     }
 

@@ -1,29 +1,17 @@
 #!/usr/bin/env python3
 """
-Map-based path planning using classic discrete algorithms.
+Map-based multi-algorithm route planning for wheelchair navigation.
 
-- **A-star** (4-neighbor grid) with non-negative edge costs (Dijkstra is the special case
-  where the heuristic is zero; here we use an admissible Manhattan heuristic).
-- **Corridor-aware costs**: BFS from blocked cells yields per-cell clearance; edges
-  near obstacles cost more so routes prefer wider passages when multiple shortest
-  routes exist.
-- **Detection keepout**: optional inflated disks around sensor hit points.
-- **Optional grid shortcutting**: greedy line-of-sight compression on cell centers.
+Algorithms used:
+- Dijkstra (A* with zero heuristic)
+- A* (Manhattan heuristic on 4-neighbor grid)
+- Weighted A* (faster directional bias, still practical on occupancy maps)
 
-Input JSON (stdin, --input, or POST body from serve_robot.py):
-
-{
-  "bounds": {"x0": -9, "x1": 9, "z0": -5, "z1": 5},
-  "cell_size": 0.14,
-  "start": {"x": -1.2, "z": 0.4},
-  "goal": {"x": 3.8, "z": -2.1},
-  "blocked_cells": ["12,44", "12,45"],
-  "static_obstacles": [{"x": 0.5, "z": 0.9, "radius": 0.55}],
-  "detections": [{"point": {"x": 1.0, "z": 1.3}, "distance": 1.2}],
-  "corridor_risk_weight": 0.22,
-  "corridor_risk_eps": 0.35,
-  "compress_path": true
-}
+Route quality model:
+- Hard collision constraints from blocked cells + detections keepout disks
+- Corridor risk from BFS distance-to-obstacle field
+- Optional novelty penalty to avoid reusing prior routes
+- Optional line-of-sight compression to reduce zig-zag waypoints
 """
 
 from __future__ import annotations
@@ -35,11 +23,12 @@ import math
 import sys
 from collections import deque
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 INF = 10**9
 RISK_DEFAULT = 0.22
 EPS_DEFAULT = 0.35
+NOVELTY_DEFAULT = 0.42
 
 
 @dataclass(frozen=True)
@@ -125,6 +114,25 @@ def _parse_blocked_keys(raw: object, nx: int, nz: int) -> Set[Cell]:
     return out
 
 
+def _extract_avoid_signatures(avoid_paths: object) -> Set[Tuple[Tuple[float, float], ...]]:
+    sigs: Set[Tuple[Tuple[float, float], ...]] = set()
+    if not isinstance(avoid_paths, list):
+        return sigs
+    for route in avoid_paths:
+        if not isinstance(route, list) or len(route) < 2:
+            continue
+        pts: List[Tuple[float, float]] = []
+        for p in route:
+            if not isinstance(p, dict):
+                continue
+            if "x" not in p or "z" not in p:
+                continue
+            pts.append((round(float(p["x"]), 4), round(float(p["z"]), 4)))
+        if len(pts) >= 2:
+            sigs.add(tuple(pts))
+    return sigs
+
+
 def _neighbors(c: Cell) -> Iterable[Cell]:
     yield Cell(c.i + 1, c.j)
     yield Cell(c.i - 1, c.j)
@@ -191,6 +199,36 @@ def _snap_to_nearby_free(c: Cell, blocked: Set[Cell], nx: int, nz: int, max_r: i
     return best
 
 
+def _build_avoid_mask(
+    avoid_paths: object,
+    b: Bounds,
+    cell_size: float,
+    nx: int,
+    nz: int,
+) -> Set[Cell]:
+    """Cells close to previously selected routes; used for novelty penalty."""
+    mask: Set[Cell] = set()
+    if not isinstance(avoid_paths, list):
+        return mask
+    for route in avoid_paths:
+        if not isinstance(route, list):
+            continue
+        for p in route:
+            if not isinstance(p, dict):
+                continue
+            if "x" not in p or "z" not in p:
+                continue
+            c = _world_to_cell(float(p["x"]), float(p["z"]), b, cell_size, nx, nz)
+            for di in range(-1, 2):
+                for dj in range(-1, 2):
+                    ni = c.i + di
+                    nj = c.j + dj
+                    if ni < 0 or nj < 0 or ni >= nx or nj >= nz:
+                        continue
+                    mask.add(Cell(ni, nj))
+    return mask
+
+
 def _astar_weighted(
     start: Cell,
     goal: Cell,
@@ -200,6 +238,9 @@ def _astar_weighted(
     dist: List[List[float]],
     risk_w: float,
     eps: float,
+    h_weight: float = 1.0,
+    novelty_mask: Optional[Set[Cell]] = None,
+    novelty_weight: float = NOVELTY_DEFAULT,
 ) -> Optional[List[Cell]]:
     if start in blocked or goal in blocked:
         return None
@@ -235,7 +276,8 @@ def _astar_weighted(
                 parent[nb] = cur
                 g_score[nb] = tg
                 counter += 1
-                f = tg + _heur(nb, goal)
+                novelty = novelty_weight if novelty_mask and nb in novelty_mask else 0.0
+                f = tg + h_weight * _heur(nb, goal) + novelty
                 heapq.heappush(open_heap, (f, counter, nb))
     return None
 
@@ -267,6 +309,27 @@ def _compress_cell_path(path: List[Cell], blocked: Set[Cell], nx: int, nz: int) 
     return out
 
 
+def _path_length_world(path: Sequence[dict]) -> float:
+    if len(path) < 2:
+        return 0.0
+    total = 0.0
+    for i in range(len(path) - 1):
+        total += math.hypot(path[i + 1]["x"] - path[i]["x"], path[i + 1]["z"] - path[i]["z"])
+    return total
+
+
+def _avg_clearance_cells(cells: Sequence[Cell], dist_field: List[List[float]]) -> float:
+    if not cells:
+        return 0.0
+    s = 0.0
+    for c in cells:
+        d = dist_field[c.i][c.j]
+        if d >= INF * 0.5:
+            d = 8.0
+        s += d
+    return s / len(cells)
+
+
 def plan_path(payload: dict) -> dict:
     b_raw = payload["bounds"]
     b = Bounds(
@@ -285,6 +348,7 @@ def plan_path(payload: dict) -> dict:
 
     blocked: Set[Cell] = set()
     blocked |= _parse_blocked_keys(payload.get("blocked_cells"), nx, nz)
+    blocked |= _parse_blocked_keys(payload.get("dynamic_blocked_cells"), nx, nz)
 
     for obs in payload.get("static_obstacles", []):
         _mark_disk(
@@ -319,10 +383,62 @@ def plan_path(payload: dict) -> dict:
 
     risk_w = float(payload.get("corridor_risk_weight", RISK_DEFAULT))
     eps = float(payload.get("corridor_risk_eps", EPS_DEFAULT))
+    novelty_weight = float(payload.get("novelty_weight", NOVELTY_DEFAULT))
+    avoid_paths_raw = payload.get("avoid_paths")
+    avoid_mask = _build_avoid_mask(avoid_paths_raw, b, cell_size, nx, nz)
+    avoid_signatures = _extract_avoid_signatures(avoid_paths_raw)
     dist_field = _bfs_clearance_from_blocked(nx, nz, blocked)
+    compress = bool(payload.get("compress_path", True))
 
-    cells = _astar_weighted(s_cell, g_cell, nx, nz, blocked, dist_field, risk_w, eps)
-    if not cells:
+    algorithms = [
+        {"id": "dijkstra", "h_weight": 0.0, "risk_scale": 1.0, "novelty_on": True},
+        {"id": "astar", "h_weight": 1.0, "risk_scale": 1.0, "novelty_on": True},
+        {"id": "weighted_astar", "h_weight": 1.25, "risk_scale": 0.9, "novelty_on": True},
+        {"id": "astar_low_risk_bias", "h_weight": 1.0, "risk_scale": 1.3, "novelty_on": False},
+    ]
+    if isinstance(payload.get("algorithms"), list):
+        requested = set(str(x) for x in payload["algorithms"])
+        algorithms = [a for a in algorithms if a["id"] in requested] or algorithms
+
+    candidates = []
+    for cfg in algorithms:
+        cells = _astar_weighted(
+            s_cell,
+            g_cell,
+            nx,
+            nz,
+            blocked,
+            dist_field,
+            risk_w=risk_w * cfg["risk_scale"],
+            eps=eps,
+            h_weight=cfg["h_weight"],
+            novelty_mask=avoid_mask,
+            novelty_weight=novelty_weight if cfg["novelty_on"] else 0.0,
+        )
+        if not cells:
+            continue
+        if compress:
+            cells = _compress_cell_path(cells, blocked, nx, nz)
+        path = []
+        for c in cells:
+            x, z = _cell_to_world(c, b, cell_size)
+            path.append({"x": round(x, 4), "z": round(z, 4)})
+        avg_clear = _avg_clearance_cells(cells, dist_field)
+        length_m = _path_length_world(path)
+        # lower is better: shorter length and wider avg clearance
+        score = length_m + 1.8 / (0.4 + avg_clear)
+        candidates.append(
+            {
+                "algorithm": cfg["id"],
+                "path": path,
+                "pathLengthCells": len(cells),
+                "lengthM": round(length_m, 4),
+                "avgClearanceCells": round(avg_clear, 4),
+                "score": round(score, 6),
+            }
+        )
+
+    if not candidates:
         return {
             "ok": False,
             "reason": "no-path",
@@ -330,21 +446,46 @@ def plan_path(payload: dict) -> dict:
             "grid": {"nx": nx, "nz": nz, "cellSize": cell_size},
         }
 
-    if bool(payload.get("compress_path", True)):
-        cells = _compress_cell_path(cells, blocked, nx, nz)
+    # Deduplicate exact repeated paths (same coordinates sequence)
+    unique = {}
+    for c in candidates:
+        sig = tuple((p["x"], p["z"]) for p in c["path"])
+        prev = unique.get(sig)
+        if prev is None or c["score"] < prev["score"]:
+            unique[sig] = c
+    candidates = list(unique.values())
+    candidates.sort(key=lambda c: c["score"])
 
-    path = []
-    for c in cells:
-        x, z = _cell_to_world(c, b, cell_size)
-        path.append({"x": round(x, 4), "z": round(z, 4)})
+    # Hard rule: new path must not be exactly equal to any prior path signature.
+    if avoid_signatures:
+        novel = []
+        for c in candidates:
+            sig = tuple((p["x"], p["z"]) for p in c["path"])
+            if sig not in avoid_signatures:
+                novel.append(c)
+        candidates = novel
+
+    if not candidates:
+        return {
+            "ok": False,
+            "reason": "no-novel-path",
+            "detail": "all candidate routes exactly matched previous path signatures",
+            "markedDetections": marked_detections,
+            "grid": {"nx": nx, "nz": nz, "cellSize": cell_size},
+        }
+
+    max_alts = int(payload.get("max_alternatives", 3))
+    alts = candidates[: max(1, min(6, max_alts))]
+    best = alts[0]
 
     return {
         "ok": True,
-        "algorithm": "astar-weighted-corridor",
-        "how": "Python: weighted A* on 4-neighbor grid (Dijkstra-style costs) + BFS corridor margins + optional LOS compression",
+        "algorithm": best["algorithm"],
+        "how": "Multi-algorithm map planning (Dijkstra/A*/Weighted A*) with collision constraints, corridor-risk scoring, and anti-repeat novelty penalty.",
         "markedDetections": marked_detections,
-        "path": path,
-        "pathLengthCells": len(path),
+        "path": best["path"],
+        "pathLengthCells": best["pathLengthCells"],
+        "alternatives": alts,
         "grid": {"nx": nx, "nz": nz, "cellSize": cell_size},
     }
 
