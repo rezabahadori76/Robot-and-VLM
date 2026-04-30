@@ -100,7 +100,7 @@ def build_app(cfg: dict) -> FastAPI:
 
     robot_public_url = os.environ.get("ROBOT_PUBLIC_URL", "http://127.0.0.1:8765").rstrip("/")
 
-    @app.get("/")
+    @app.get("/", response_model=None)
     def root(request: Request) -> HTMLResponse | JSONResponse:
         """Browsers: HTML hint (8787 is API only). Scripts: add ?format=json or Accept: application/json."""
         q = request.query_params.get("format", "")
