@@ -61,7 +61,7 @@ import yaml  # noqa: E402
 import uvicorn  # noqa: E402
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import HTMLResponse, JSONResponse, Response  # noqa: E402
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response  # noqa: E402
 
 from common.types import FramePacket, FrameWorldState, Pose, SemanticFrame  # noqa: E402
 from detection.grounding_dino_detector import GroundingDinoDetector  # noqa: E402
@@ -104,6 +104,7 @@ def build_app(cfg: dict) -> FastAPI:
     def root(request: Request) -> HTMLResponse | JSONResponse:
         """Browsers: HTML hint (8787 is API only). Scripts: add ?format=json or Accept: application/json."""
         q = request.query_params.get("format", "")
+        no_redirect = request.query_params.get("no_redirect", "").lower() in {"1", "true", "yes"}
         accept = request.headers.get("accept", "")
         want_json = q == "json" or (
             "application/json" in accept and "text/html" not in accept.split(",")[0]
@@ -117,6 +118,9 @@ def build_app(cfg: dict) -> FastAPI:
         }
         if want_json:
             return JSONResponse(payload)
+        if "text/html" in accept and not no_redirect:
+            # User-friendly behavior: opening API port in browser should jump to UI app.
+            return RedirectResponse(url=f"{robot_public_url}/", status_code=307)
         if "text/html" in accept:
             return HTMLResponse(
                 f"""<!DOCTYPE html>
@@ -158,6 +162,10 @@ def build_app(cfg: dict) -> FastAPI:
     def health() -> dict:
         return {
             "ok": True,
+            "pipeline": {
+                "mode": "grounding_dino_then_sam",
+                "segmentation_requires_detections": True,
+            },
             "detection": detector.status(),
             "segmentation": segmenter.status(),
         }
@@ -186,7 +194,11 @@ def build_app(cfg: dict) -> FastAPI:
 
         try:
             detections = detector.detect(packet)
-            segments = segmenter.segment(packet, detections)
+            # Strict pipeline: detect objects first (Grounding DINO), then segment only detected objects (SAM).
+            if detections:
+                segments = segmenter.segment(packet, detections)
+            else:
+                segments = []
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 

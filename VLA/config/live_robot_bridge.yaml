@@ -8,21 +8,24 @@ detection:
   use_real_model: true
   device: cuda
   stabilization_enabled: false
-  box_threshold: 0.45
-  text_threshold: 0.2
+  # Lower thresholds to improve recall (more objects detected for SAM segmentation).
+  box_threshold: 0.36
+  text_threshold: 0.16
   prompt: wall . floor . ceiling . window . curtain . blind . carpet . rug . sofa
     . couch . armchair . chair . table . coffee table . dining table . desk . tv .
     monitor . laptop . bookshelf . shelf . cabinet . wardrobe . drawer . bed . pillow
     . blanket . nightstand . lamp . chandelier . mirror . painting . plant . door
     . handle . fridge . oven . microwave . sink . faucet . toilet . shower . bathtub
     . washing machine . dishwasher . stove . trash bin . clock . fan . air conditioner
+    . basket . bin . bucket . box . bottle . cup . plate . bowl . book . notebook . bag
+    . backpack . shoe . slipper . wheelchair . walker . cane . toy . doll . vase
 segmentation:
   model_type: vit_h
   checkpoint: models/sam/sam_vit_h_4b8939.pth
   use_real_model: true
   device: cuda
-  # SAM mask quality score (0–1): keep segments at or above this value.
-  mask_score_threshold: 0.35
+  # Lower threshold for denser segmentation recall.
+  mask_score_threshold: 0.2
 visualization:
   draw_masks: true
   draw_boxes: false
@@ -30,6 +33,6 @@ visualization:
   overlay_box_thickness: 2
   overlay_label_thickness: 1
 live_bridge:
-  # Smaller side = faster GPU path (override with env VLA_MAX_INFER_SIDE).
-  max_infer_side: 512
+  # Larger side improves small-object detect/segment quality (higher GPU cost).
+  max_infer_side: 768
   jpeg_quality: 85

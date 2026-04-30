@@ -591,9 +591,12 @@
     const MIN_PASSAGE_WIDTH_M = WHEELCHAIR_BODY_WIDTH_M + WHEELCHAIR_SIDE_SAFETY_M * 2;
     const PREFERRED_PASSAGE_WIDTH_M = MIN_PASSAGE_WIDTH_M + 0.28;
     const RISK_WEIGHT = 2.2;
+    const WALL_PATH_CLEARANCE_M = NAV_CLEAR_HALF + 0.12;
+    const WALL_PATH_CLEARANCE_RELAXED_M = Math.max(0.2, WALL_PATH_CLEARANCE_M - 0.08);
     // Strict keepout rule: maintain roughly one wheelchair width from obstacles.
     const WHEELCHAIR_OBJECT_KEEP_DISTANCE_M = NAV_CLEAR_HALF + WHEELCHAIR_BODY_WIDTH_M;
     const navClearanceCellCache = new Map();
+    const wallClearanceCellCache = new Map();
     const navObjectRaycaster = new THREE.Raycaster();
     const FLOOR_LIKE_MAX_HEIGHT_M = 0.1;
     const FLOOR_LIKE_MAX_TOP_Y_M = FLOOR_Y + 0.12;
@@ -671,6 +674,73 @@
       return !walkFn(c.i, c.j);
     }
 
+    function nearestWallDistanceApprox(x, z, maxProbeM) {
+      if (inDoorOpeningZone(x, z, 0.03)) {
+        return maxProbeM;
+      }
+      const probeMax = Math.max(0.08, maxProbeM || 0.8);
+      const step = 0.03;
+      const dirs = 20;
+      for (let s = step; s <= probeMax; s += step) {
+        for (let i = 0; i < dirs; i++) {
+          const a = (i / dirs) * Math.PI * 2;
+          const px = x + Math.cos(a) * s;
+          const pz = z + Math.sin(a) * s;
+          if (isBlocked(px, pz)) {
+            return Math.max(0, s - step);
+          }
+        }
+      }
+      return probeMax;
+    }
+
+    function cellHasWallClearance(i, j, minClearanceM) {
+      const ck = `${i},${j}|${minClearanceM.toFixed(2)}`;
+      if (wallClearanceCellCache.has(ck)) return wallClearanceCellCache.get(ck);
+      const w = cellToWorld(i, j);
+      const d = nearestWallDistanceApprox(w.x, w.z, Math.max(0.8, minClearanceM + 0.2));
+      const inDoor = inDoorOpeningZone(w.x, w.z, 0.03);
+      const required = inDoor
+        ? Math.max(0.12, minClearanceM * 0.62)
+        : minClearanceM;
+      const ok = d >= required;
+      wallClearanceCellCache.set(ck, ok);
+      return ok;
+    }
+
+    function _clampToInterior(x, z, margin) {
+      const m = Math.max(0.05, margin || 0.2);
+      return {
+        x: Math.max(OUTER_BOUNDS.x0 + m, Math.min(OUTER_BOUNDS.x1 - m, x)),
+        z: Math.max(OUTER_BOUNDS.z0 + m, Math.min(OUTER_BOUNDS.z1 - m, z)),
+      };
+    }
+
+    function _nudgePointAwayFromWalls(x, z, targetClearanceM) {
+      const base = _clampToInterior(x, z, 0.2);
+      let best = { x: base.x, z: base.z };
+      let bestScore = -1e9;
+      const dirs = 18;
+      for (let r = 0; r <= 0.55; r += 0.06) {
+        for (let i = 0; i < dirs; i++) {
+          const a = (i / dirs) * Math.PI * 2;
+          const cand = _clampToInterior(
+            base.x + Math.cos(a) * r,
+            base.z + Math.sin(a) * r,
+            0.2
+          );
+          if (isBlocked(cand.x, cand.z)) continue;
+          const clear = nearestWallDistanceApprox(cand.x, cand.z, targetClearanceM + 0.35);
+          const score = clear - r * 0.12;
+          if (score > bestScore) {
+            bestScore = score;
+            best = cand;
+          }
+        }
+      }
+      return best;
+    }
+
     /** Width estimate around a point: checks opposite-direction free spans (X/Z). */
     function estimatePassageWidthAt(x, z, walkFn) {
       if (inDoorOpeningZone(x, z)) {
@@ -705,7 +775,16 @@
 
     function cellWalkableNav(i, j) {
       if (!cellWalkable(i, j)) return false;
-      return !dynamicObstacleCells.has(`${i},${j}`);
+      if (dynamicObstacleCells.has(`${i},${j}`)) return false;
+      return cellHasWallClearance(i, j, WALL_PATH_CLEARANCE_M);
+    }
+
+    // Emergency map walkability: relaxed but still keeps wall/boundary clearance.
+    function cellWalkableEmergency(i, j) {
+      const w = cellToWorld(i, j);
+      if (isBlocked(w.x, w.z)) return false;
+      if (dynamicObstacleCells.has(`${i},${j}`)) return false;
+      return cellHasWallClearance(i, j, WALL_PATH_CLEARANCE_RELAXED_M);
     }
 
     function markDynamicObstacleDisk(wx, wz, radiusM) {
@@ -1262,7 +1341,8 @@
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.08;
+    // Slightly brighter global exposure so wheel camera is readable in dark corners.
+    renderer.toneMappingExposure = 1.22;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.setClearColor(0x0b1118);
@@ -1271,7 +1351,7 @@
     const scene = new THREE.Scene();
     scene.fog = new THREE.Fog(0x0b1118, 24, 64);
     const clock = new THREE.Clock();
-    const APP_BUILD_ID = "2026-04-30-map-replan-v4-nocache-srv";
+    const APP_BUILD_ID = "2026-04-30-map-replan-v8-wall-clearance";
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
     const VIEW_SPLIT = 0.56; // left: main view, right: wheelchair camera (wider right pane)
     /** One VLA inference ↔ one discrete step along the yellow path (meters of arc length). */
@@ -1333,6 +1413,7 @@
     function endAssetLoad() {
       pendingAssetLoads = Math.max(0, pendingAssetLoads - 1);
       navClearanceCellCache.clear();
+      wallClearanceCellCache.clear();
       floorLikeMeshCache.clear();
     }
 
@@ -1464,8 +1545,8 @@
       { passive: false }
     );
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.42));
-    scene.add(new THREE.HemisphereLight(0xd7e3ff, 0x4d3f35, 0.3));
+    scene.add(new THREE.AmbientLight(0xffffff, 0.54));
+    scene.add(new THREE.HemisphereLight(0xd7e3ff, 0x4d3f35, 0.38));
     const dir = new THREE.DirectionalLight(0xfff6ea, 1.05);
     dir.position.set(11, 18, 9);
     dir.castShadow = true;
@@ -1481,7 +1562,7 @@
     const fill = new THREE.DirectionalLight(0xbfd4ff, 0.28);
     fill.position.set(-9, 10, -7);
     scene.add(fill);
-    const warmBounce = new THREE.PointLight(0xffd7b3, 0.24, 24, 2);
+    const warmBounce = new THREE.PointLight(0xffd7b3, 0.3, 24, 2);
     warmBounce.position.set(0.2, 2.2, 0.4);
     scene.add(warmBounce);
 
@@ -2654,6 +2735,13 @@
     robotGroup = buildRobot();
     scene.add(robotGroup);
     robotGroup.add(wheelCam);
+    // Wheelchair headlight: improves local visibility for wheelchair camera in low-light areas.
+    const wheelHeadLight = new THREE.SpotLight(0xffffff, 1.35, 14, Math.PI / 5.5, 0.42, 1.6);
+    wheelHeadLight.position.set(0, 1.0, 0.2);
+    wheelHeadLight.target.position.set(0, 0.85, -2.2);
+    wheelHeadLight.castShadow = false;
+    robotGroup.add(wheelHeadLight);
+    robotGroup.add(wheelHeadLight.target);
     function isFloorLikeTraversableMesh(mesh) {
       if (!mesh || !mesh.isMesh) return false;
       if (mesh.userData && mesh.userData.traversableSurface) return true;
@@ -3130,12 +3218,30 @@
       return l;
     }
 
-    function _mapRiskScore(poly) {
+    function _absAngleDiff(a, b) {
+      let d = a - b;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      return Math.abs(d);
+    }
+
+    function _headingPenaltyForPath(poly) {
+      if (!poly || poly.length < 2) return 0;
+      const dx = poly[1].x - poly[0].x;
+      const dz = poly[1].z - poly[0].z;
+      if (Math.hypot(dx, dz) < 1e-6) return 0;
+      const desiredYaw = Math.atan2(dx, dz);
+      const currentYaw = robotGroup.rotation.y || 0;
+      return _absAngleDiff(desiredYaw, currentYaw);
+    }
+
+    function _mapRiskScore(poly, walkFn) {
       if (!poly || poly.length < 2) return Infinity;
       let risk = 0;
       const safe = WHEELCHAIR_BODY_WIDTH_M + WHEELCHAIR_SIDE_SAFETY_M;
+      const walk = walkFn || cellWalkableNav;
       for (let i = 0; i < poly.length; i++) {
-        const w = estimatePassageWidthAt(poly[i].x, poly[i].z, cellWalkableNav);
+        const w = estimatePassageWidthAt(poly[i].x, poly[i].z, walk);
         if (!Number.isFinite(w)) {
           risk += 10;
           continue;
@@ -3161,14 +3267,41 @@
       const expanded = expandPathThroughGrid(asPoly, cellWalkableNav);
       if (!expanded || expanded.length < 2) return null;
       const length = _pathLength(expanded);
-      const risk = _mapRiskScore(expanded);
+      const risk = _mapRiskScore(expanded, cellWalkableNav);
+      const headingPenalty = _headingPenaltyForPath(expanded);
       return {
         points: expanded,
         length: length,
         risk: risk,
-        score: length + CANDIDATE_RISK_WEIGHT * risk,
+        headingPenalty: headingPenalty,
+        score: length + CANDIDATE_RISK_WEIGHT * risk + headingPenalty * 0.75,
       };
     }
+
+    function _buildEmergencyAstarCandidate(si, gi) {
+      const gridPath = astarGrid4(si.i, si.j, gi.i, gi.j, cellWalkableEmergency);
+      if (!gridPath || gridPath.length < 2) return null;
+      const asPoly = gridPath.map(function (p) {
+        return { x: p.x, z: p.z };
+      });
+      asPoly[0] = { x: robotGroup.position.x, z: robotGroup.position.z };
+      const expanded = expandPathThroughGrid(asPoly, cellWalkableEmergency);
+      if (!expanded || expanded.length < 2) return null;
+      const length = _pathLength(expanded);
+      const risk = _mapRiskScore(expanded, cellWalkableEmergency);
+      const headingPenalty = _headingPenaltyForPath(expanded);
+      return {
+        tag: "astar-emergency",
+        points: expanded,
+        length: length,
+        risk: risk,
+        headingPenalty: headingPenalty,
+        score: length + CANDIDATE_RISK_WEIGHT * risk + headingPenalty * 0.75,
+      };
+    }
+
+    // Deterministic only: random and speculative detour helpers were removed
+    // to keep replanning stable, near, and obstacle-triggered.
 
     function tryReplanAroundDetectedObstacle(scan, opts) {
       const force = !!(opts && opts.force);
@@ -3184,15 +3317,30 @@
         });
         return;
       }
-      const near = scan.nearest;
-      const fwd = scan.forwardClearanceM;
+      let near = scan.nearest;
+      let fwd = scan.forwardClearanceM;
       if (near == null || fwd == null) {
+        if (force) {
+          // Forced-stop mode must always attempt a route; synthesize minimal scan context.
+          const yaw = robotGroup.rotation.y || 0;
+          const sx0 = robotGroup.position.x;
+          const sz0 = robotGroup.position.z;
+          near = near || {
+            distance: REPLAN_MIN_CLEARANCE_M,
+            point: {
+              x: sx0 + Math.sin(yaw) * REPLAN_MIN_CLEARANCE_M,
+              z: sz0 + Math.cos(yaw) * REPLAN_MIN_CLEARANCE_M,
+            },
+          };
+          fwd = Number.isFinite(fwd) ? fwd : REPLAN_MIN_CLEARANCE_M;
+        } else {
         logFrameEvent("replan-skip", {
           reason: "insufficient-scan",
           hasNearest: !!near,
           hasForward: fwd != null,
         });
         return;
+        }
       }
       // Doorways are valid traversable openings for the wheelchair.
       if (!force && inDoorOpeningZone(near.point.x, near.point.z)) {
@@ -3272,10 +3420,70 @@
       }
 
       if (!candidates.length) {
+        // Stable deterministic fallback #1: A* on geometry-only walkability.
         _restoreDynamicCells(snapDyn);
+        const emergency = _buildEmergencyAstarCandidate(si, gi);
+        if (emergency && emergency.points && emergency.points.length >= 2) {
+          lastReplanTime = performance.now();
+          applyNewPathFromPolyline(
+            emergency.points,
+            "Stable fallback route (A* emergency) to destination."
+          );
+          logFrameEvent("replan-emergency", {
+            mode: emergency.tag,
+            len: +emergency.length.toFixed(3),
+            risk: +emergency.risk.toFixed(3),
+            headingPenalty: +emergency.headingPenalty.toFixed(3),
+            score: +emergency.score.toFixed(3),
+            waypoints: emergency.points.length,
+          });
+          replanBusy = false;
+          return;
+        }
+
+        // Stable deterministic fallback #2: graph + dijkstra route over room/door map.
+        const gRes = NAV.findPathDijkstra(sx, sz, gx, gz);
+        if (gRes && gRes.ok && gRes.points && gRes.points.length >= 2) {
+          const gPath = expandPathThroughGrid(gRes.points, cellWalkableEmergency);
+          if (gPath && gPath.length >= 2) {
+            lastReplanTime = performance.now();
+            applyNewPathFromPolyline(
+              gPath,
+              "Stable fallback route (graph+dijkstra) to destination."
+            );
+            logFrameEvent("replan-emergency", {
+              mode: "graph-dijkstra",
+              how: gRes.how || "dijkstra",
+              waypoints: gPath.length,
+            });
+            replanBusy = false;
+            return;
+          }
+        }
+
+        // Absolute guarantee: always design a destination route while keeping wall clearance preference.
+        const mid = _nudgePointAwayFromWalls(
+          (sx + gx) * 0.5,
+          (sz + gz) * 0.5,
+          WALL_PATH_CLEARANCE_RELAXED_M
+        );
+        const goalSafe = _nudgePointAwayFromWalls(gx, gz, WALL_PATH_CLEARANCE_RELAXED_M);
+        const forcedSeed = [{ x: sx, z: sz }, mid, goalSafe];
+        const forced = expandPathThroughGrid(forcedSeed, cellWalkableEmergency);
+        const forcedPath =
+          forced && forced.length >= 2
+            ? forced
+            : forcedSeed;
+        lastReplanTime = performance.now();
+        applyNewPathFromPolyline(
+          forcedPath,
+          "Forced destination route generated from current point."
+        );
+        logFrameEvent("replan-forced-destination", {
+          mode: "direct-stitch",
+          waypoints: forcedPath.length,
+        });
         replanBusy = false;
-        setStatus("Replan failed: no map candidate path.");
-        logFrameEvent("replan", "failed no map candidate");
         return;
       }
 
@@ -3350,15 +3558,19 @@
       if (!path) {
         const a = worldToCell(sx, sz);
         const b2 = worldToCell(gx, gz);
-        const gr = astarGrid4(a.i, a.j, b2.i, b2.j);
+        const gr = astarGrid4(a.i, a.j, b2.i, b2.j, cellWalkableNav);
         if (gr && gr.length >= 2) {
           path = expandPathThroughGrid(
             gr.map(function (p) {
               return { x: p.x, z: p.z };
-            })
+            }),
+            cellWalkableNav
           );
           how = "grid4";
         }
+      }
+      if (path && path.length >= 2) {
+        path = expandPathThroughGrid(path, cellWalkableNav);
       }
       if (!path || path.length < 2) {
         setStatus("No path found between these rooms.");

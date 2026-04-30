@@ -231,5 +231,9 @@ class GroundingDinoDetector:
             "backend": self.backend_name,
             "real_backend_active": self.is_real_backend,
             "model_name": self.model_name,
+            "box_threshold": self.box_threshold,
+            "text_threshold": self.text_threshold,
+            "min_score": self.min_score,
+            "label_count": len(self.labels),
             "init_error": self.init_error,
         }
