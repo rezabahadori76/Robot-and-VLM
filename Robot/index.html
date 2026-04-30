@@ -783,8 +783,13 @@
       return cellHasWallClearance(i, j, WALL_PATH_CLEARANCE_M);
     }
 
+    let staticNavBlockedKeysCache = null;
+
     /** Lightweight static occupancy for Python planner (no expensive object-ray clearance sweep). */
     function collectStaticNavBlockedKeys() {
+      if (staticNavBlockedKeysCache && staticNavBlockedKeysCache.length) {
+        return staticNavBlockedKeysCache;
+      }
       const keys = [];
       for (let i = 0; i < nx; i++) {
         for (let j = 0; j < nz; j++) {
@@ -794,7 +799,8 @@
           }
         }
       }
-      return keys;
+      staticNavBlockedKeysCache = keys;
+      return staticNavBlockedKeysCache;
     }
 
     // Emergency map walkability: relaxed but still keeps wall/boundary clearance.
@@ -3406,6 +3412,7 @@
           source: "robot-index-map",
         },
         detection_base_radius: OBSTACLE_BLOCK_RADIUS_M,
+        min_clearance_m: Math.max(WALL_PATH_CLEARANCE_M, WHEELCHAIR_BODY_WIDTH_M * 0.5 + WHEELCHAIR_SIDE_SAFETY_M),
         algorithms: ["dijkstra", "astar", "weighted_astar", "astar_low_risk_bias"],
         max_alternatives: 4,
         avoid_paths: lastPathFlat && lastPathFlat.length >= 2 ? [lastPathFlat] : [],
@@ -3415,8 +3422,8 @@
       function fetchPlan(payload, timeoutMs) {
         const ac = new AbortController();
         const tid = setTimeout(function () {
-          ac.abort();
-        }, timeoutMs || 4500);
+          ac.abort("planner-timeout");
+        }, timeoutMs || 12000);
         return fetch("/api/plan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -3432,7 +3439,7 @@
             clearTimeout(tid);
           });
       }
-      fetchPlan(basePayload, 4500)
+      fetchPlan(basePayload, 12000)
         .then(function (res) {
           if (!res || !res.ok || !res.path || res.path.length < 2) {
             // Still Python-only: retry with relaxed-yet-valid planner params.
@@ -3442,7 +3449,7 @@
               detection_base_radius: Math.max(0.28, OBSTACLE_BLOCK_RADIUS_M * 0.78),
               max_alternatives: 6,
             });
-            return fetchPlan(relaxed, 4500).then(function (r2) {
+            return fetchPlan(relaxed, 12000).then(function (r2) {
               if (!r2 || !r2.ok || !r2.path || r2.path.length < 2) {
                 const reason = (r2 && (r2.reason || r2.detail)) || (res && (res.reason || res.detail)) || "no-path-from-python";
                 throw new Error(reason);
@@ -3464,10 +3471,18 @@
           if (onSuccess) onSuccess(asPoly, goodRes);
         })
         .catch(function (err) {
+          let reason = err && err.message ? err.message : String(err);
+          if (
+            reason === "The user aborted a request." ||
+            reason === "signal is aborted without reason" ||
+            reason === "planner-timeout"
+          ) {
+            reason = "python-planner-timeout";
+          }
           logFrameEvent("replan-python-skip", {
-            reason: err && err.message ? err.message : String(err),
+            reason: reason,
           });
-          if (onError) onError(err);
+          if (onError) onError(new Error(reason));
         });
     }
 

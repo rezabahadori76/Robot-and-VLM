@@ -241,8 +241,11 @@ def _astar_weighted(
     h_weight: float = 1.0,
     novelty_mask: Optional[Set[Cell]] = None,
     novelty_weight: float = NOVELTY_DEFAULT,
+    min_clearance_cells: float = 0.0,
 ) -> Optional[List[Cell]]:
     if start in blocked or goal in blocked:
+        return None
+    if dist[start.i][start.j] < min_clearance_cells or dist[goal.i][goal.j] < min_clearance_cells:
         return None
     open_heap: List[Tuple[float, int, Cell]] = []
     counter = 0
@@ -269,6 +272,8 @@ def _astar_weighted(
             if nb.i < 0 or nb.j < 0 or nb.i >= nx or nb.j >= nz:
                 continue
             if nb in blocked:
+                continue
+            if dist[nb.i][nb.j] < min_clearance_cells:
                 continue
             w = _edge_cost(cur, nb, dist, risk_w, eps)
             tg = gcur + w
@@ -383,6 +388,8 @@ def plan_path(payload: dict) -> dict:
 
     risk_w = float(payload.get("corridor_risk_weight", RISK_DEFAULT))
     eps = float(payload.get("corridor_risk_eps", EPS_DEFAULT))
+    min_clearance_m = float(payload.get("min_clearance_m", 0.32))
+    min_clearance_cells = max(0.0, min_clearance_m / max(1e-6, cell_size))
     novelty_weight = float(payload.get("novelty_weight", NOVELTY_DEFAULT))
     avoid_paths_raw = payload.get("avoid_paths")
     avoid_mask = _build_avoid_mask(avoid_paths_raw, b, cell_size, nx, nz)
@@ -414,6 +421,7 @@ def plan_path(payload: dict) -> dict:
             h_weight=cfg["h_weight"],
             novelty_mask=avoid_mask,
             novelty_weight=novelty_weight if cfg["novelty_on"] else 0.0,
+            min_clearance_cells=min_clearance_cells,
         )
         if not cells:
             continue
