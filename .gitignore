@@ -45,8 +45,9 @@ temp/
 *.bak
 
 # --- VLA: heavy / generated (keep out of git) ---
-VLA/.venv/
-VLA/models/
+# Paths without trailing slash so symlinks to local .venv/models are ignored too.
+VLA/.venv
+VLA/models
 VLA/data/
 VLA/outputs/
 VLA/tmp/
