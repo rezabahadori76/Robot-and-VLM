@@ -1,0 +1,32 @@
+# local paths — first map_Kd used by simple loader
+newmtl white_st
+Ka 0.98 0.94 0.95
+Kd 0.98 0.94 0.95
+Ks 0.63 0.63 0.63
+illum 2
+Ns 70
+map_Kd Ocra_Wht.jpg
+
+newmtl st_grey
+Ka 0.78 0.78 0.78
+Kd 0.78 0.78 0.78
+Ks 0.63 0.63 0.63
+illum 2
+Ns 70
+map_Kd Ocra_Gre.jpg
+
+newmtl black_st
+Ka 0.31 0.31 0.31
+Kd 0.31 0.31 0.31
+Ks 0.63 0.63 0.63
+illum 2
+Ns 70
+map_Kd black.jpg
+
+newmtl st_red
+Ka 0.85 0.35 0.35
+Kd 0.85 0.35 0.35
+Ks 0.63 0.63 0.63
+illum 2
+Ns 70
+map_Kd Ocra_pnk.jpg

@@ -1,0 +1,8 @@
+# local paths for web loader
+newmtl Ceramic
+Ka 0.95 0.95 0.95
+Kd 0.95 0.95 0.95
+Ks 0.63 0.63 0.63
+illum 2
+Ns 70
+map_Kd peschian.jpg

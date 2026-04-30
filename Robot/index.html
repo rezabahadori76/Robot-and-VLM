@@ -1,0 +1,3132 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Wheelchair path — 3D home demo</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+      background: #0f1419;
+      color: #e6edf3;
+      overflow: hidden;
+    }
+    #canvas-wrap {
+      position: fixed;
+      inset: 0;
+    }
+    #view-badges {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 12;
+    }
+    .view-badge {
+      position: absolute;
+      top: 10px;
+      padding: 6px 10px;
+      border-radius: 7px;
+      border: 1px solid rgba(102, 117, 137, 0.5);
+      background: rgba(15, 20, 26, 0.6);
+      color: #c9d1d9;
+      font-size: 0.67rem;
+      letter-spacing: 0.02em;
+      backdrop-filter: blur(2px);
+    }
+    #badge-main { left: 10px; }
+    #badge-wheel { right: 10px; text-align: right; }
+    #cam-meta {
+      display: block;
+      margin-top: 3px;
+      font-size: 0.56rem;
+      color: #8b949e;
+      letter-spacing: 0;
+    }
+    #hud {
+      position: absolute;
+      top: calc(50px + max(10px, env(safe-area-inset-top, 0px)));
+      right: calc(max(10px, env(safe-area-inset-right, 0px)) + 150px);
+      left: auto;
+      width: min(
+        260px,
+        calc(
+          100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 36px
+        )
+      );
+      max-width: calc(
+        100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 36px
+      );
+      max-height: calc(
+        100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 70px
+      );
+      overflow-x: hidden;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      background: rgba(22, 27, 34, 0.95);
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      padding: 12px 14px;
+      z-index: 20;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+      pointer-events: auto;
+    }
+    .hud-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    #hud h1 {
+      margin: 0;
+      font-size: 0.9rem;
+      font-weight: 600;
+      line-height: 1.25;
+      flex: 1;
+      min-width: 0;
+    }
+    .hud-collapse-btn {
+      flex: none;
+      width: auto;
+      min-width: 2rem;
+      padding: 4px 8px;
+      font-size: 1rem;
+      line-height: 1;
+      font-weight: 600;
+      border-radius: 6px;
+    }
+    #hud.collapsed {
+      max-height: none;
+      overflow: visible;
+    }
+    #hud.collapsed .hud-header {
+      margin-bottom: 0;
+    }
+    #hud.collapsed #hud-body {
+      display: none;
+    }
+    #hud label {
+      display: block;
+      font-size: 0.72rem;
+      color: #8b949e;
+      margin-bottom: 3px;
+      margin-top: 7px;
+    }
+    #hud label:first-of-type {
+      margin-top: 0;
+    }
+    #hud select {
+      width: 100%;
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid #30363d;
+      background: #161b22;
+      color: #e6edf3;
+      font-size: 0.8rem;
+    }
+    .hud-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .hud-actions button {
+      width: 100%;
+      flex: none;
+    }
+    button {
+      cursor: pointer;
+      border: 1px solid #388bfd;
+      background: #1f6feb;
+      color: #fff;
+      padding: 7px 10px;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      font-weight: 500;
+    }
+    button.secondary {
+      background: #21262d;
+      border-color: #30363d;
+      color: #c9d1d9;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    #status {
+      font-size: 0.74rem;
+      color: #7ee787;
+      margin-top: 8px;
+      min-height: 1.4em;
+      line-height: 1.3;
+    }
+    #clearance {
+      font-size: 0.65rem;
+      color: #a5d6ff;
+      margin-top: 6px;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.35;
+      white-space: normal;
+      word-break: break-word;
+    }
+    #clearance.muted {
+      color: #6e7681;
+    }
+    #sensor-hud {
+      font-size: 0.62rem;
+      color: #ffa657;
+      margin-top: 5px;
+      line-height: 1.35;
+      font-variant-numeric: tabular-nums;
+    }
+    #sensor-hud.muted {
+      color: #6e7681;
+    }
+    #hud .hint {
+      display: block;
+      font-size: 0.65rem;
+      color: #6e7681;
+      margin: 6px 0 0;
+      line-height: 1.3;
+    }
+    #hud .hint code {
+      font-size: 0.85em;
+    }
+    #vla-live-layer {
+      position: fixed;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: 34%;
+      z-index: 18;
+      pointer-events: none;
+      display: none;
+    }
+    #vla-live-layer.active {
+      display: block;
+    }
+    #vla-live-img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      background: #0b1118;
+    }
+    #vla-live-status {
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: 8px;
+      font-size: 0.58rem;
+      color: #7ee787;
+      background: rgba(0, 0, 0, 0.55);
+      padding: 5px 7px;
+      border-radius: 5px;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    #inp-vla-url {
+      width: 100%;
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid #30363d;
+      background: #161b22;
+      color: #e6edf3;
+      font-size: 0.75rem;
+      margin-top: 2px;
+    }
+  </style>
+  <script src="three.min.js"></script>
+  <script src="MTLLoader.js"></script>
+  <script src="OBJLoader.js"></script>
+  <script src="TDSLoader.js"></script>
+</head>
+<body>
+  <div id="canvas-wrap">
+    <div id="view-badges">
+      <div id="badge-main" class="view-badge">Top / Orbit View</div>
+      <div id="badge-wheel" class="view-badge">
+        Wheelchair 3D Camera
+        <span id="cam-meta">FOV 130 | 640x480 | RGB-D</span>
+      </div>
+    </div>
+    <div id="vla-live-layer" aria-hidden="true">
+      <img id="vla-live-img" alt="VLA perception overlay" width="1" height="1" />
+      <div id="vla-live-status"></div>
+    </div>
+    <div id="hud">
+      <div class="hud-header">
+        <h1>Wheelchair route</h1>
+        <button
+          type="button"
+          id="btn-hud-collapse"
+          class="secondary hud-collapse-btn"
+          aria-expanded="true"
+          aria-controls="hud-body"
+          title="Collapse panel"
+        >
+          −
+        </button>
+      </div>
+      <div id="hud-body" aria-hidden="false">
+        <label for="sel-start">Start (room)</label>
+        <select id="sel-start" aria-label="Start room"></select>
+        <label for="sel-end">Destination (room)</label>
+        <select id="sel-end" aria-label="Destination room"></select>
+        <div class="hud-actions">
+          <button type="button" id="btn-show-path">Show path</button>
+          <button type="button" id="btn-move" class="secondary">Move wheelchair</button>
+        </div>
+        <button type="button" id="btn-clear" class="secondary" style="width:100%;margin-top:6px;">Clear</button>
+        <div id="status"></div>
+        <div id="clearance" class="muted" aria-live="polite"></div>
+        <div id="sensor-hud" class="muted" aria-live="polite"></div>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;">
+          <input type="checkbox" id="chk-vla-live" />
+          <span style="font-size:0.76rem;color:#c9d1d9;">VLA live overlay (DINO + SAM)</span>
+        </label>
+        <label for="inp-vla-url" style="margin-top:8px;">VLA API (live_frame_server)</label>
+        <input type="text" id="inp-vla-url" value="http://127.0.0.1:8787" autocomplete="off" spellcheck="false" />
+        <p class="hint" style="margin-top:6px;">
+          When enabled, each camera frame is sent to VLA (detection + segmentation only; no VLM). The overlay updates, then the wheelchair advances a <strong>fixed step</strong> along the path (<code>VLA_PATH_STEP_METERS</code> in code). Start API: <code>python scripts/live_frame_server.py</code> in the VLA repo.
+        </p>
+        <p class="hint">
+          Place <code>three.min.js</code> next to this file. Drag on the view to orbit. Inspect <code>ROBOT_HOUSE</code> in the console.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /* global THREE */
+    (function () {
+    if (typeof THREE === "undefined") {
+      document.getElementById("status").textContent =
+        "Error: three.min.js must sit next to index.html.";
+      return;
+    }
+
+    // --- World: 1 bedroom, living, kitchen, corridor (rectangle). Y up, Z = north.
+    const FLOOR_Y = 0;
+    const WALL_H = 2.65;
+    const WALL_T = 0.12;
+    const HALF_T = WALL_T / 2;
+    const DOOR_HZ = 0.48;
+    const DOOR_HX = 0.48;
+    /** Lateral clearance (~wheelchair half-width) for robust segment tests */
+    const NAV_CLEAR_HALF = 0.34;
+
+    const OUTER_BOUNDS = { x0: -9.0, x1: 9.0, z0: -5.0, z1: 5.0 };
+    /** Walkable floor envelope (kept aligned with enlarged plan) */
+    const FOOTPRINT_POLY = [
+      [-8.2, -4.35],
+      [8.2, -4.35],
+      [8.2, 4.35],
+      [-8.2, 4.35],
+    ];
+
+    function pointInPoly(px, pz, poly) {
+      let inside = false;
+      const n = poly.length;
+      for (let i = 0, j = n - 1; i < n; j = i++) {
+        const xi = poly[i][0];
+        const zi = poly[i][1];
+        const xj = poly[j][0];
+        const zj = poly[j][1];
+        const cross =
+          (zi > pz) !== (zj > pz) &&
+          px < ((xj - xi) * (pz - zi)) / (zj - zi + 1e-12) + xi;
+        if (cross) inside = !inside;
+      }
+      return inside;
+    }
+
+    function distPointSeg(px, pz, ax, az, bx, bz) {
+      const abx = bx - ax;
+      const abz = bz - az;
+      const apx = px - ax;
+      const apz = pz - az;
+      const ab2 = abx * abx + abz * abz + 1e-12;
+      let t = (apx * abx + apz * abz) / ab2;
+      t = Math.max(0, Math.min(1, t));
+      const qx = ax + abx * t;
+      const qz = az + abz * t;
+      return Math.hypot(px - qx, pz - qz);
+    }
+
+    function distToFootprintEdge(x, z) {
+      const poly = FOOTPRINT_POLY;
+      let dMin = Infinity;
+      for (let i = 0; i < poly.length; i++) {
+        const j = (i + 1) % poly.length;
+        dMin = Math.min(
+          dMin,
+          distPointSeg(x, z, poly[i][0], poly[i][1], poly[j][0], poly[j][1])
+        );
+      }
+      return dMin;
+    }
+
+    function segV(cx, z0, z1) {
+      return { x0: cx - HALF_T, x1: cx + HALF_T, z0: z0, z1: z1 };
+    }
+    function segH(zc, x0, x1) {
+      return { x0: x0, x1: x1, z0: zc - HALF_T, z1: zc + HALF_T };
+    }
+
+    /** Vertical wall with door gaps on z */
+    function splitWallV(cx, zLo, zHi, doorCentersZ) {
+      const out = [];
+      const dc = doorCentersZ.slice().sort(function (a, b) {
+        return a - b;
+      });
+      let a = zLo;
+      for (let k = 0; k < dc.length; k++) {
+        const dz = dc[k];
+        const g0 = dz - DOOR_HZ;
+        const g1 = dz + DOOR_HZ;
+        if (g0 > a + 0.04) out.push(segV(cx, a, g0));
+        a = Math.max(a, g1);
+      }
+      if (zHi > a + 0.04) out.push(segV(cx, a, zHi));
+      return out;
+    }
+    /** Horizontal wall with door gaps on x */
+    function splitWallH(zc, xLo, xHi, doorCentersX) {
+      const out = [];
+      const dc = doorCentersX.slice().sort(function (a, b) {
+        return a - b;
+      });
+      let a = xLo;
+      for (let k = 0; k < dc.length; k++) {
+        const dx = dc[k];
+        const g0 = dx - DOOR_HX;
+        const g1 = dx + DOOR_HX;
+        if (g0 > a + 0.04) out.push(segH(zc, a, g0));
+        a = Math.max(a, g1);
+      }
+      if (xHi > a + 0.04) out.push(segH(zc, a, xHi));
+      return out;
+    }
+
+    /**
+     * Plan: W=bedroom | center=corridor | E=living (N) + kitchen (S); wall at z=0 between living & kitchen.
+     * roomId: 0=living, 1=kitchen, 2=corridor, 3=bedroom — all doors connect to corridor (2).
+     */
+    const PLAN = {
+      zBot: -4.1,
+      zTop: 4.1,
+      xWest: -7.9,
+      xEast: 7.9,
+      xBedCor: -2.65,
+      xCorEast: 2.65,
+      zLivingKitchen: 0,
+    };
+
+    const SLIT_BEDCOR_Z = [0];
+    const SLIT_COREAST_Z = [-2.31, 2.31];
+
+    const INTERIOR_SEGMENTS = (function buildInterior() {
+      const s = [];
+      const P = PLAN;
+      s.push.apply(s, splitWallV(P.xBedCor, P.zBot, P.zTop, SLIT_BEDCOR_Z));
+      s.push.apply(s, splitWallV(P.xCorEast, P.zBot, P.zTop, SLIT_COREAST_Z));
+      s.push(
+        segH(
+          P.zLivingKitchen,
+          P.xCorEast + HALF_T,
+          P.xEast
+        )
+      );
+      return s;
+    })();
+
+    const DOOR_DEFS = [
+      {
+        id: 0,
+        kind: "v",
+        x: PLAN.xBedCor,
+        z: SLIT_BEDCOR_Z[0],
+        roomA: 3,
+        roomB: 2,
+        label: "Bedroom ↔ corridor (west wall)",
+        flip: 1,
+      },
+      {
+        id: 1,
+        kind: "v",
+        x: PLAN.xCorEast,
+        z: SLIT_COREAST_Z[0],
+        roomA: 1,
+        roomB: 2,
+        label: "Kitchen ↔ corridor (east wall, south)",
+        flip: -1,
+      },
+      {
+        id: 2,
+        kind: "v",
+        x: PLAN.xCorEast,
+        z: SLIT_COREAST_Z[1],
+        roomA: 0,
+        roomB: 2,
+        label: "Living room ↔ corridor (east wall, north)",
+        flip: -1,
+      },
+    ];
+
+    /** Exact opening box from wall thickness + door half-sizes */
+    function doorOpeningGeom(d) {
+      if (d.kind === "v") {
+        return {
+          x0: d.x - HALF_T,
+          x1: d.x + HALF_T,
+          z0: d.z - DOOR_HZ,
+          z1: d.z + DOOR_HZ,
+        };
+      }
+      return {
+        x0: d.x - DOOR_HX,
+        x1: d.x + DOOR_HX,
+        z0: d.z - HALF_T,
+        z1: d.z + HALF_T,
+      };
+    }
+
+    const NAV_MARGIN = 0.08;
+
+    const DOOR_SPECS = DOOR_DEFS.map(function (d) {
+      return { kind: d.kind, x: d.x, z: d.z, flip: d.flip };
+    });
+
+    const NAV_DOORS = DOOR_DEFS.map(function (d) {
+      return {
+        id: d.id,
+        x: d.x,
+        z: d.z,
+        kind: d.kind,
+        roomA: d.roomA,
+        roomB: d.roomB,
+      };
+    });
+
+    /** Navigation cushion around each door opening (collision exempt) */
+    function inDoorOpeningZone(x, z) {
+      const m = NAV_MARGIN;
+      for (let di = 0; di < DOOR_DEFS.length; di++) {
+        const d = DOOR_DEFS[di];
+        if (d.kind === "v") {
+          if (
+            Math.abs(z - d.z) <= DOOR_HZ + m &&
+            Math.abs(x - d.x) <= DOOR_HX + m
+          ) {
+            return true;
+          }
+        } else if (
+          Math.abs(x - d.x) <= DOOR_HX + m &&
+          Math.abs(z - d.z) <= DOOR_HZ + m
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function inInteriorWall(x, z) {
+      if (inDoorOpeningZone(x, z)) return false;
+      for (let i = 0; i < INTERIOR_SEGMENTS.length; i++) {
+        const s = INTERIOR_SEGMENTS[i];
+        if (x >= s.x0 && x <= s.x1 && z >= s.z0 && z <= s.z1) return true;
+      }
+      return false;
+    }
+
+    function isBlocked(x, z) {
+      const m = 0.08;
+      const peri = WALL_T + m;
+      if (!pointInPoly(x, z, FOOTPRINT_POLY)) return true;
+      if (inDoorOpeningZone(x, z)) return false;
+      if (distToFootprintEdge(x, z) < peri) return true;
+      if (inInteriorWall(x, z)) return true;
+      return false;
+    }
+
+    const CELL = 0.14;
+    const nx = Math.ceil((OUTER_BOUNDS.x1 - OUTER_BOUNDS.x0) / CELL) + 1;
+    const nz = Math.ceil((OUTER_BOUNDS.z1 - OUTER_BOUNDS.z0) / CELL) + 1;
+
+    function worldToCell(x, z) {
+      let i = Math.round((x - OUTER_BOUNDS.x0) / CELL);
+      let j = Math.round((z - OUTER_BOUNDS.z0) / CELL);
+      i = Math.max(0, Math.min(nx - 1, i));
+      j = Math.max(0, Math.min(nz - 1, j));
+      return { i, j };
+    }
+    function cellToWorld(i, j) {
+      return {
+        x: OUTER_BOUNDS.x0 + i * CELL,
+        z: OUTER_BOUNDS.z0 + j * CELL,
+      };
+    }
+
+    function cellWalkable(i, j) {
+      const { x, z } = cellToWorld(i, j);
+      return !isBlocked(x, z);
+    }
+
+    /** Temporarily blocked cells (furniture / obstacle hits) for dynamic replanning */
+    const dynamicObstacleCells = new Set();
+
+    function cellWalkableNav(i, j) {
+      if (!cellWalkable(i, j)) return false;
+      return !dynamicObstacleCells.has(`${i},${j}`);
+    }
+
+    function markDynamicObstacleDisk(wx, wz, radiusM) {
+      const c0 = worldToCell(wx, wz);
+      const rIdx = Math.ceil(radiusM / CELL) + 1;
+      for (let di = -rIdx; di <= rIdx; di++) {
+        for (let dj = -rIdx; dj <= rIdx; dj++) {
+          const i = c0.i + di;
+          const j = c0.j + dj;
+          if (i < 0 || j < 0 || i >= nx || j >= nz) continue;
+          const w = cellToWorld(i, j);
+          if (Math.hypot(w.x - wx, w.z - wz) <= radiusM) {
+            dynamicObstacleCells.add(`${i},${j}`);
+          }
+        }
+      }
+    }
+
+    /** 4-neighbor A* (no diagonals through wall corners). Optional walkableFn for dynamic obstacles. */
+    function astarGrid4(si, sj, gi, gj, walkableFn) {
+      const walk = walkableFn || cellWalkable;
+      if (!walk(si, sj) || !walk(gi, gj)) return null;
+      const key = (i, j) => `${i},${j}`;
+      const open = new Map();
+      const gScore = new Map();
+      const parent = new Map();
+      const hE = (i, j) => {
+        const w = cellToWorld(i, j);
+        const g = cellToWorld(gi, gj);
+        return Math.hypot(g.x - w.x, g.z - w.z);
+      };
+      const sK = key(si, sj);
+      gScore.set(sK, 0);
+      open.set(sK, hE(si, sj));
+      const closed = new Set();
+      const card = [ [1,0],[-1,0],[0,1],[0,-1] ];
+
+      while (open.size) {
+        let bestK = null;
+        let bestF = Infinity;
+        for (const [k, f] of open) {
+          if (f < bestF) { bestF = f; bestK = k; }
+        }
+        open.delete(bestK);
+        const [ci, cj] = bestK.split(",").map(Number);
+        if (ci === gi && cj === gj) {
+          const path = [];
+          let cur = bestK;
+          while (cur) {
+            const [pi, pj] = cur.split(",").map(Number);
+            path.push(cellToWorld(pi, pj));
+            cur = parent.get(cur) ?? null;
+          }
+          path.reverse();
+          return path;
+        }
+        if (closed.has(bestK)) continue;
+        closed.add(bestK);
+        const cg = gScore.get(bestK) ?? 0;
+        for (const [di, dj] of card) {
+          const ni = ci + di;
+          const nj = cj + dj;
+          if (ni < 0 || nj < 0 || ni >= nx || nj >= nz) continue;
+          if (!walk(ni, nj)) continue;
+          const nk = key(ni, nj);
+          if (closed.has(nk)) continue;
+          const ng = cg + CELL;
+          if (!gScore.has(nk) || ng < gScore.get(nk)) {
+            gScore.set(nk, ng);
+            parent.set(nk, bestK);
+            open.set(nk, ng + hE(ni, nj));
+          }
+        }
+      }
+      return null;
+    }
+
+    const ROOM_DEF_LIST = [
+      { label: "Living room", isCorridor: false },
+      { label: "Kitchen", isCorridor: false },
+      { label: "Corridor", isCorridor: true },
+      { label: "Bedroom", isCorridor: false },
+    ];
+    const ROOMS = (function buildRoomsFromRegions() {
+      const raw = [
+        { x0: 2.8, x1: 7.75, z0: 0.1, z1: 3.9 },
+        { x0: 2.8, x1: 7.75, z0: -3.9, z1: -0.1 },
+        { x0: -2.55, x1: 2.55, z0: -3.9, z1: 3.9 },
+        { x0: -7.75, x1: -2.8, z0: -3.9, z1: 3.9 },
+      ];
+      const R = [];
+      for (let id = 0; id < raw.length; id++) {
+        const b = raw[id];
+        const meta = ROOM_DEF_LIST[id];
+        R.push({
+          id,
+          x0: b.x0,
+          x1: b.x1,
+          z0: b.z0,
+          z1: b.z1,
+          nCol: 1,
+          nRow: 1,
+          ri: 0,
+          ci: id,
+          label: meta.label,
+          isCorridor: meta.isCorridor,
+          isMiddleRow: false,
+          cx: (b.x0 + b.x1) * 0.5,
+          cz: (b.z0 + b.z1) * 0.5,
+        });
+      }
+      return R;
+    })();
+
+    (function populateHudSelects() {
+      const ss = document.getElementById("sel-start");
+      const se = document.getElementById("sel-end");
+      if (!ss || !se) return;
+      ROOMS.forEach(function (r) {
+        const o1 = document.createElement("option");
+        o1.value = String(r.id);
+        o1.textContent = r.label;
+        ss.appendChild(o1);
+        const o2 = document.createElement("option");
+        o2.value = String(r.id);
+        o2.textContent = r.label;
+        se.appendChild(o2);
+      });
+      ss.value = "3";
+      se.value = "0";
+    })();
+
+    function navPointInRoom(roomId) {
+      const R = ROOMS[roomId];
+      return { x: R.cx, z: R.cz };
+    }
+
+    function lineWalkable(x0, z0, x1, z1) {
+      const len = Math.hypot(x1 - x0, z1 - z0);
+      const n = Math.max(6, Math.ceil(len / 0.06));
+      for (let k = 0; k <= n; k++) {
+        const t = k / n;
+        if (isBlocked(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    function simplifyPath2D(raw) {
+      if (!raw || raw.length < 3) return raw;
+      const out = [raw[0]];
+      let i = 0;
+      while (i < raw.length - 1) {
+        let j = raw.length - 1;
+        while (j > i + 1 && !lineWalkable(raw[i].x, raw[i].z, raw[j].x, raw[j].z)) {
+          j -= 1;
+        }
+        out.push(raw[j]);
+        i = j;
+      }
+      return out;
+    }
+
+    /** Multi-track straight walk test (wheelchair width) */
+    function segmentWalkableRobust(ax, az, bx, bz) {
+      const len = Math.hypot(bx - ax, bz - az);
+      if (len < 1e-7) return !isBlocked(ax, az);
+      const steps = Math.max(14, Math.ceil(len / 0.022));
+      const px = (bx - ax) / len;
+      const pz = (bz - az) / len;
+      const qx = -pz;
+      const qz = px;
+      const offs = [0, -NAV_CLEAR_HALF, NAV_CLEAR_HALF];
+      for (let oi = 0; oi < offs.length; oi++) {
+        const ox = qx * offs[oi];
+        const oz = qz * offs[oi];
+        for (let k = 0; k <= steps; k++) {
+          const t = k / steps;
+          const x = ax + (bx - ax) * t + ox;
+          const z = az + (bz - az) * t + oz;
+          if (isBlocked(x, z)) return false;
+        }
+      }
+      return true;
+    }
+
+    /** Safe attach point from room toward door */
+    function doorAttachPoint(room, doorX, doorZ) {
+      const vx = room.cx - doorX;
+      const vz = room.cz - doorZ;
+      const len = Math.hypot(vx, vz) || 1;
+      const ux = vx / len;
+      const uz = vz / len;
+      for (let s = 0.32; s < 11; s += 0.2) {
+        const px = doorX + ux * s;
+        const pz = doorZ + uz * s;
+        if (px < room.x0 || px > room.x1 || pz < room.z0 || pz > room.z1) break;
+        if (segmentWalkableRobust(px, pz, doorX, doorZ)) {
+          return { x: px, z: pz };
+        }
+      }
+      return { x: room.cx, z: room.cz };
+    }
+
+    /** Insert grid subpath if a straight segment hits a wall */
+    function expandPathThroughGrid(polyline, walkableFn) {
+      if (!polyline || polyline.length < 2) return polyline;
+      const out = [{ x: polyline[0].x, z: polyline[0].z }];
+      for (let i = 0; i < polyline.length - 1; i++) {
+        const a = out[out.length - 1];
+        const b = polyline[i + 1];
+        if (segmentWalkableRobust(a.x, a.z, b.x, b.z)) {
+          if (Math.hypot(b.x - a.x, b.z - a.z) > 0.025) {
+            out.push({ x: b.x, z: b.z });
+          }
+          continue;
+        }
+        const ai = worldToCell(a.x, a.z);
+        const bi = worldToCell(b.x, b.z);
+        const gp = astarGrid4(ai.i, ai.j, bi.i, bi.j, walkableFn);
+        if (gp && gp.length >= 2) {
+          for (let k = 1; k < gp.length; k++) {
+            const p = gp[k];
+            const last = out[out.length - 1];
+            if (Math.hypot(p.x - last.x, p.z - last.z) > 0.04) {
+              out.push({ x: p.x, z: p.z });
+            }
+          }
+        } else if (Math.hypot(b.x - a.x, b.z - a.z) > 0.025) {
+          out.push({ x: b.x, z: b.z });
+        }
+      }
+      return out;
+    }
+
+    function emitSteeredPolyline(seq, sx, sz, gx, gz, nR0, nD0, S0, G0) {
+      const pts = [];
+      for (let i = 0; i < seq.length; i++) {
+        const id = seq[i];
+        const prev = seq[i - 1];
+        const next = seq[i + 1];
+        if (id === S0) {
+          pts.push({ x: sx, z: sz });
+        } else if (id === G0) {
+          pts.push({ x: gx, z: gz });
+        } else if (id < nR0) {
+          const R = ROOMS[id];
+          let ax = R.cx;
+          let az = R.cz;
+          let cnt = 0;
+          function accDoor(nid) {
+            if (nid >= nR0 && nid < nR0 + nD0) {
+              const D = NAV_DOORS[nid - nR0];
+              ax += D.x;
+              az += D.z;
+              cnt++;
+            }
+          }
+          accDoor(prev);
+          accDoor(next);
+          if (cnt > 0) {
+            ax /= cnt + 1;
+            az /= cnt + 1;
+          }
+          const ins = 0.12;
+          pts.push({
+            x: Math.min(R.x1 - ins, Math.max(R.x0 + ins, ax)),
+            z: Math.min(R.z1 - ins, Math.max(R.z0 + ins, az)),
+          });
+        } else if (id < nR0 + nD0) {
+          const D = NAV_DOORS[id - nR0];
+          pts.push({ x: D.x, z: D.z });
+        }
+      }
+      return pts;
+    }
+
+    /** Graph: rooms + doors + S/G; output polyline is width-checked and stitched. */
+    const NAV = (function buildNav() {
+      const nR = ROOMS.length;
+      const nD = NAV_DOORS.length;
+      const nBase = nR + nD;
+      const S = nBase;
+      const G = nBase + 1;
+      const nTot = nBase + 2;
+
+      function d2(ax, az, bx, bz) {
+        return Math.hypot(bx - ax, bz - az);
+      }
+
+    function addUnd(adj, u, v, w) {
+        if (w < 0 || w > 1e6) return;
+        if (!adj[u]) adj[u] = [];
+        if (!adj[v]) adj[v] = [];
+        adj[u].push({ to: v, w: w });
+        adj[v].push({ to: u, w: w });
+    }
+
+    function findRoomId(px, pz) {
+        for (let r = 0; r < nR; r++) {
+          const R = ROOMS[r];
+          if (
+            px >= R.x0 &&
+            px <= R.x1 &&
+            pz >= R.z0 &&
+            pz <= R.z1
+          ) {
+            return r;
+          }
+        }
+        return -1;
+      }
+
+    function doorInRoom(did, rid) {
+        const D = NAV_DOORS[did];
+        return D.roomA === rid || D.roomB === rid;
+    }
+
+    function findPathDijkstra(sx, sz, gx, gz) {
+        const rA = findRoomId(sx, sz);
+        const rB = findRoomId(gx, gz);
+        if (rA < 0 || rB < 0) {
+          return { ok: false, points: null, how: "noroom" };
+        }
+        if (rA === rB) {
+          const direct = [
+            { x: sx, z: sz },
+            { x: gx, z: gz },
+          ];
+          if (segmentWalkableRobust(sx, sz, gx, gz)) {
+            return { ok: true, points: direct, how: "line" };
+          }
+          const stitched = expandPathThroughGrid(direct);
+          if (stitched && stitched.length >= 2) {
+            return { ok: true, points: stitched, how: "line+stitch" };
+          }
+        }
+        const adj = Array.from({ length: nTot }, function () {
+          return [];
+        });
+        for (let d = 0; d < nD; d++) {
+          const D = NAV_DOORS[d];
+          const ra = D.roomA;
+          const rbD = D.roomB;
+          const du = nR + d;
+          const Raa = ROOMS[ra];
+          const Rbb = ROOMS[rbD];
+          const aa = doorAttachPoint(Raa, D.x, D.z);
+          const ab = doorAttachPoint(Rbb, D.x, D.z);
+          addUnd(adj, ra, du, d2(aa.x, aa.z, D.x, D.z));
+          addUnd(adj, rbD, du, d2(ab.x, ab.z, D.x, D.z));
+        }
+        const RsA = ROOMS[rA];
+        const RsB = ROOMS[rB];
+        if (segmentWalkableRobust(sx, sz, RsA.cx, RsA.cz)) {
+          addUnd(adj, S, rA, d2(sx, sz, RsA.cx, RsA.cz));
+        } else {
+          for (let d = 0; d < nD; d++) {
+            if (
+              doorInRoom(d, rA) &&
+              segmentWalkableRobust(sx, sz, NAV_DOORS[d].x, NAV_DOORS[d].z)
+            ) {
+              addUnd(
+                adj,
+                S,
+                nR + d,
+                d2(sx, sz, NAV_DOORS[d].x, NAV_DOORS[d].z)
+              );
+            }
+          }
+        }
+        if (!adj[S] || adj[S].length === 0) {
+          addUnd(adj, S, rA, d2(sx, sz, RsA.cx, RsA.cz));
+        }
+        if (segmentWalkableRobust(gx, gz, RsB.cx, RsB.cz)) {
+          addUnd(adj, rB, G, d2(gx, gz, RsB.cx, RsB.cz));
+        } else {
+          for (let d = 0; d < nD; d++) {
+            if (
+              doorInRoom(d, rB) &&
+              segmentWalkableRobust(gx, gz, NAV_DOORS[d].x, NAV_DOORS[d].z)
+            ) {
+              addUnd(
+                adj,
+                nR + d,
+                G,
+                d2(gx, gz, NAV_DOORS[d].x, NAV_DOORS[d].z)
+              );
+            }
+          }
+        }
+        if (!adj[rB] || !adj[rB].some(function (e) { return e.to === G; })) {
+          addUnd(adj, rB, G, d2(gx, gz, RsB.cx, RsB.cz));
+        }
+        const dist0 = new Array(nTot);
+        for (let i = 0; i < nTot; i++) {
+          dist0[i] = Infinity;
+        }
+        const parent0 = new Array(nTot);
+        for (let i2 = 0; i2 < nTot; i2++) {
+          parent0[i2] = -1;
+        }
+        const used0 = new Array(nTot);
+        for (let i3 = 0; i3 < nTot; i3++) {
+          used0[i3] = false;
+        }
+        dist0[S] = 0;
+        for (let it0 = 0; it0 < nTot; it0++) {
+          let u0 = -1, best0 = Infinity;
+          for (let j0 = 0; j0 < nTot; j0++) {
+            if (!used0[j0] && dist0[j0] < best0) {
+              best0 = dist0[j0];
+              u0 = j0;
+            }
+          }
+          if (u0 < 0 || !isFinite(best0)) {
+            break;
+          }
+          if (u0 === G) {
+            break;
+          }
+          used0[u0] = true;
+          (adj[u0] || []).forEach(function (ed) {
+            if (used0[ed.to]) {
+              return;
+            }
+            const alt0 = best0 + ed.w;
+            if (alt0 < dist0[ed.to]) {
+              dist0[ed.to] = alt0;
+              parent0[ed.to] = u0;
+            }
+          });
+        }
+        if (!isFinite(dist0[G])) {
+          return { ok: false, points: null, how: "graph" };
+        }
+        const seq0 = [];
+        for (var at0 = G, sGuard = 0; at0 !== -1 && sGuard < 50; sGuard++) {
+        seq0.push(at0);
+        if (at0 === S) {
+        break;
+      }
+        at0 = parent0[at0];
+    }
+        if (seq0.length === 0 || seq0[seq0.length - 1] !== S) {
+        return { ok: false, points: null, how: "badchain" };
+    }
+    seq0.reverse();
+    const steered = emitSteeredPolyline(
+          seq0,
+          sx,
+          sz,
+          gx,
+          gz,
+          nR,
+          nD,
+          S,
+          G
+        );
+        return {
+          ok: true,
+          points: expandPathThroughGrid(steered),
+          how: "dijkstra",
+        };
+  }
+
+  return { findRoomId, findPathDijkstra, S, G, nR, nD };
+  })();
+
+    const DOOR_CATALOG = DOOR_DEFS.map(function (d) {
+      return {
+        id: d.id,
+        kind: d.kind,
+        center: { x: d.x, z: d.z },
+        openingMeters: doorOpeningGeom(d),
+        label: d.label,
+        roomA: d.roomA,
+        roomB: d.roomB,
+      };
+    });
+
+    const ROBOT_HOUSE = {
+      version: 5,
+      unit: "m",
+      description:
+        "4 rooms + corridor; door-graph pathfinding + grid stitch. Wheelchair camera sensor (ray-based object detection) for clearance / future replanning.",
+      bounds: OUTER_BOUNDS,
+      footprint: FOOTPRINT_POLY,
+      plan: PLAN,
+      slits: {
+        bedroomCorridorZ: SLIT_BEDCOR_Z,
+        eastWingCorridorZ: SLIT_COREAST_Z,
+      },
+      doorCount: NAV_DOORS.length,
+      doorsDetailed: DOOR_CATALOG,
+      rooms: ROOMS,
+      corridors: ROOMS.filter(function (R) {
+        return R.isCorridor;
+      }),
+      doors: NAV_DOORS,
+      nav: {
+        nodes: NAV.nR,
+        doorNodes: NAV.nD,
+        sIndex: NAV.S,
+        gIndex: NAV.G,
+        primary: "dijkstra",
+      },
+      /** Filled after Three.js scene + wheelchairCameraSensor init */
+      wheelchairCameraSensor: null,
+    };
+    try { window.ROBOT_HOUSE = ROBOT_HOUSE; } catch (e) {}
+
+    // --- Three.js scene
+    const wrap = document.getElementById("canvas-wrap");
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.08;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.setClearColor(0x0b1118);
+    wrap.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0x0b1118, 24, 64);
+    const clock = new THREE.Clock();
+    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
+    const VIEW_SPLIT = 0.66; // left: main view, right: wheelchair camera
+    /** One VLA inference ↔ one discrete step along the yellow path (meters of arc length). */
+    const VLA_PATH_STEP_METERS = 0.1;
+    /** ~2× zoom-out vs old 112°: double visible span at same depth (cap FOV for usable distortion). */
+    const WHEELCAM_FOV_PREV_DEG = 112;
+    const _wheelHalfRad = THREE.MathUtils.degToRad(WHEELCAM_FOV_PREV_DEG) / 2;
+    const wheelCamFovDeg = Math.min(
+      THREE.MathUtils.radToDeg(2 * Math.atan(2 * Math.tan(_wheelHalfRad))),
+      130
+    );
+    const wheelCam = new THREE.PerspectiveCamera(wheelCamFovDeg, 1, 0.05, 40);
+    wheelCam.position.set(0, 1.02, 0.22);
+    wheelCam.rotation.x = -0.04;
+    wheelCam.rotation.y = Math.PI;
+    const camMetaEl = document.getElementById("cam-meta");
+    const clearanceEl = document.getElementById("clearance");
+    const sensorHudEl = document.getElementById("sensor-hud");
+    const hudEl = document.getElementById("hud");
+    const hudBodyEl = document.getElementById("hud-body");
+    const btnHudCollapse = document.getElementById("btn-hud-collapse");
+    if (btnHudCollapse && hudEl && hudBodyEl) {
+      btnHudCollapse.addEventListener("click", function () {
+        const collapsed = hudEl.classList.toggle("collapsed");
+        btnHudCollapse.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        hudBodyEl.setAttribute("aria-hidden", collapsed ? "true" : "false");
+        btnHudCollapse.textContent = collapsed ? "+" : "−";
+        btnHudCollapse.title = collapsed ? "Expand panel" : "Collapse panel";
+      });
+    }
+    const vlaLiveLayer = document.getElementById("vla-live-layer");
+    const vlaLiveImg = document.getElementById("vla-live-img");
+    const vlaLiveStatus = document.getElementById("vla-live-status");
+    const chkVlaLive = document.getElementById("chk-vla-live");
+    const inpVlaUrl = document.getElementById("inp-vla-url");
+    const orbitTarget = new THREE.Vector3(0, 0, 0);
+    camera.position.set(0, 9.5, 11);
+    camera.lookAt(orbitTarget);
+
+    const off0 = new THREE.Vector3().copy(camera.position).sub(orbitTarget);
+    const orbit = {
+      radius: off0.length(),
+      phi: Math.acos(THREE.MathUtils.clamp(off0.y / off0.length(), -1, 1)),
+      theta: Math.atan2(off0.x, off0.z),
+    };
+    const PHI_MIN = 0.12;
+    const PHI_MAX = Math.PI * 0.48;
+
+    function syncCameraFromOrbit() {
+      const sp = Math.sin(orbit.phi);
+      camera.position.set(
+        orbitTarget.x + orbit.radius * sp * Math.sin(orbit.theta),
+        orbitTarget.y + orbit.radius * Math.cos(orbit.phi),
+        orbitTarget.z + orbit.radius * sp * Math.cos(orbit.theta)
+      );
+      camera.lookAt(orbitTarget);
+    }
+
+    const drag = { active: false, moved: false, lx: 0, ly: 0 };
+    const DRAG_PX = 6;
+    const canvasEl = renderer.domElement;
+    canvasEl.style.touchAction = "none";
+
+    canvasEl.addEventListener("pointerdown", function (e) {
+      if (e.button !== 0) return;
+      drag.active = true;
+      drag.moved = false;
+      drag.lx = e.clientX;
+      drag.ly = e.clientY;
+      canvasEl.setPointerCapture(e.pointerId);
+    });
+    canvasEl.addEventListener("pointermove", function (e) {
+      if (!drag.active) return;
+      const dx = e.clientX - drag.lx;
+      const dy = e.clientY - drag.ly;
+      if (Math.abs(dx) + Math.abs(dy) > DRAG_PX) drag.moved = true;
+      if (drag.moved) {
+        orbit.theta -= dx * 0.006;
+        orbit.phi = THREE.MathUtils.clamp(orbit.phi - dy * 0.006, PHI_MIN, PHI_MAX);
+        drag.lx = e.clientX;
+        drag.ly = e.clientY;
+        syncCameraFromOrbit();
+      }
+    });
+    function endDrag(e) {
+      if (!drag.active) return;
+      try {
+        if (e.pointerId != null) canvasEl.releasePointerCapture(e.pointerId);
+      } catch (_) {}
+      drag.active = false;
+    }
+    canvasEl.addEventListener("pointerup", endDrag);
+    canvasEl.addEventListener("pointercancel", endDrag);
+    canvasEl.addEventListener(
+      "wheel",
+      function (e) {
+        e.preventDefault();
+        const k = Math.exp(e.deltaY * 0.001);
+        orbit.radius = THREE.MathUtils.clamp(orbit.radius * k, 7, 72);
+        syncCameraFromOrbit();
+      },
+      { passive: false }
+    );
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.42));
+    scene.add(new THREE.HemisphereLight(0xd7e3ff, 0x4d3f35, 0.3));
+    const dir = new THREE.DirectionalLight(0xfff6ea, 1.05);
+    dir.position.set(11, 18, 9);
+    dir.castShadow = true;
+    dir.shadow.mapSize.set(2048, 2048);
+    dir.shadow.camera.near = 1;
+    dir.shadow.camera.far = 60;
+    dir.shadow.camera.left = -18;
+    dir.shadow.camera.right = 18;
+    dir.shadow.camera.top = 18;
+    dir.shadow.camera.bottom = -18;
+    dir.shadow.bias = -0.00015;
+    scene.add(dir);
+    const fill = new THREE.DirectionalLight(0xbfd4ff, 0.28);
+    fill.position.set(-9, 10, -7);
+    scene.add(fill);
+    const warmBounce = new THREE.PointLight(0xffd7b3, 0.24, 24, 2);
+    warmBounce.position.set(0.2, 2.2, 0.4);
+    scene.add(warmBounce);
+
+    function makeFloorTexture(baseHex) {
+      const c = document.createElement("canvas");
+      c.width = 512;
+      c.height = 512;
+      const ctx = c.getContext("2d");
+      const base = new THREE.Color(baseHex);
+      ctx.fillStyle = "#" + base.getHexString();
+      ctx.fillRect(0, 0, c.width, c.height);
+      for (let i = 0; i < 190; i++) {
+        const a = 0.03 + Math.random() * 0.04;
+        ctx.fillStyle = "rgba(40,30,20," + a.toFixed(3) + ")";
+        const x = Math.random() * c.width;
+        const y = Math.random() * c.height;
+        const w = 40 + Math.random() * 180;
+        const h = 2 + Math.random() * 6;
+        ctx.fillRect(x, y, w, h);
+      }
+      for (let y = 0; y < c.height; y += 42) {
+        ctx.fillStyle = "rgba(20,16,12,0.08)";
+        ctx.fillRect(0, y, c.width, 2);
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(1.8, 1.8);
+      tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      return tex;
+    }
+
+    function addFloorRegion(x0, x1, z0, z1, color) {
+      const g = new THREE.PlaneGeometry(x1 - x0, z1 - z0);
+      const tex = makeFloorTexture(color);
+      const m = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        map: tex,
+        roughness: 0.82,
+        metalness: 0.03,
+        side: THREE.DoubleSide,
+      });
+      const mesh = new THREE.Mesh(g, m);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.set((x0 + x1) / 2, FLOOR_Y + 0.01, (z0 + z1) / 2);
+      mesh.receiveShadow = true;
+      scene.add(mesh);
+    }
+
+    /* Floor tints per room */
+    (function addFloors() {
+      const inset = 0.02;
+      const palette = [
+        0xc9b89a,
+        0xb8c9d6,
+        0x9a9088,
+        0xd4c4a8,
+      ];
+      for (let id = 0; id < ROOMS.length; id++) {
+        const R = ROOMS[id];
+        addFloorRegion(
+          R.x0 + inset,
+          R.x1 - inset,
+          R.z0 + inset,
+          R.z1 - inset,
+          palette[id % palette.length]
+        );
+      }
+    })();
+
+    /** Dark door threshold strips on floor */
+    (function addDoorFloorMarks() {
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0x4d3f32,
+        roughness: 0.72,
+        metalness: 0.06,
+      });
+      for (let i = 0; i < DOOR_DEFS.length; i++) {
+        const d = DOOR_DEFS[i];
+        const x0 = d.x - DOOR_HX;
+        const x1 = d.x + DOOR_HX;
+        const z0 = d.z - DOOR_HZ;
+        const z1 = d.z + DOOR_HZ;
+        const g = new THREE.PlaneGeometry(x1 - x0, z1 - z0);
+        const mesh = new THREE.Mesh(g, mat);
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.position.set(
+          (x0 + x1) * 0.5,
+          FLOOR_Y + 0.038,
+          (z0 + z1) * 0.5
+        );
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+      }
+    })();
+
+    (function addCeilingFrame() {
+      const x0 = FOOTPRINT_POLY[0][0];
+      const x1 = FOOTPRINT_POLY[1][0];
+      const z0 = FOOTPRINT_POLY[0][1];
+      const z1 = FOOTPRINT_POLY[2][1];
+      const inset = 0.65;
+      const t = 0.06;
+      const y = FLOOR_Y + WALL_H - t * 0.5;
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xf1f2f4,
+        roughness: 0.9,
+        metalness: 0.02,
+      });
+      function cap(cx, cz, w, d) {
+        const piece = new THREE.Mesh(new THREE.BoxGeometry(w, t, d), mat);
+        piece.position.set(cx, y, cz);
+        piece.receiveShadow = true;
+        scene.add(piece);
+      }
+      cap((x0 + x1) * 0.5, z1 - inset * 0.5, x1 - x0, inset);
+      cap((x0 + x1) * 0.5, z0 + inset * 0.5, x1 - x0, inset);
+      cap(x0 + inset * 0.5, (z0 + z1) * 0.5, inset, z1 - z0 - inset * 2);
+      cap(x1 - inset * 0.5, (z0 + z1) * 0.5, inset, z1 - z0 - inset * 2);
+    })();
+
+    function wallBox(cx, cz, w, d) {
+      const g = new THREE.BoxGeometry(w, WALL_H, d);
+      const m = new THREE.MeshStandardMaterial({
+        color: 0x8e96a1,
+        roughness: 0.87,
+        metalness: 0.04,
+      });
+      const mesh = new THREE.Mesh(g, m);
+      mesh.position.set(cx, FLOOR_Y + WALL_H / 2, cz);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      scene.add(mesh);
+      return mesh;
+    }
+
+    (function addPerimeterL() {
+      const poly = FOOTPRINT_POLY;
+      const off = WALL_T * 0.52 + 0.02;
+      const n = poly.length;
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        const ax = poly[i][0];
+        const az = poly[i][1];
+        const bx = poly[j][0];
+        const bz = poly[j][1];
+        const dx = bx - ax;
+        const dz = bz - az;
+        const len = Math.hypot(dx, dz);
+        if (len < 1e-4) continue;
+        const mx = (ax + bx) * 0.5;
+        const mz = (az + bz) * 0.5;
+        const lx = -dz / len;
+        const lz = dx / len;
+        const ox = -lx * off;
+        const oz = -lz * off;
+        const cx = mx + ox;
+        const cz = mz + oz;
+        if (Math.abs(dx) >= Math.abs(dz)) {
+          wallBox(cx, cz, len + WALL_T * 1.2, WALL_T);
+        } else {
+          wallBox(cx, cz, WALL_T, len + WALL_T * 1.2);
+        }
+      }
+    })();
+
+    for (const s of INTERIOR_SEGMENTS) {
+      const w = s.x1 - s.x0;
+      const d = s.z1 - s.z0;
+      wallBox((s.x0 + s.x1) / 2, (s.z0 + s.z1) / 2, w, d);
+    }
+
+    (function addDoors3D() {
+      const frameMat = new THREE.MeshStandardMaterial({
+        color: 0x4a3f35,
+        roughness: 0.78,
+        metalness: 0.1,
+      });
+      const leafMat = new THREE.MeshStandardMaterial({
+        color: 0x6d5344,
+        roughness: 0.7,
+        metalness: 0.05,
+      });
+      const lintelMat = new THREE.MeshStandardMaterial({
+        color: 0x5a5a5e,
+        roughness: 0.55,
+        metalness: 0.25,
+      });
+      const DpZ = DOOR_HZ * 2 - 0.04;
+      const DpX = DOOR_HX * 2 - 0.04;
+      const H = 1.95;
+      const ymid = FLOOR_Y + H * 0.5;
+      const openY = 0.58;
+      for (let di = 0; di < DOOR_SPECS.length; di++) {
+        const d = DOOR_SPECS[di];
+        if (d.kind === "v") {
+          const g = new THREE.Group();
+          g.position.set(d.x, 0, d.z);
+          const top = new THREE.Mesh(
+            new THREE.BoxGeometry(0.11, 0.16, DpZ + 0.1),
+            lintelMat
+          );
+          top.position.set(0, FLOOR_Y + H + 0.05, 0);
+          g.add(top);
+          for (const side of [-1, 1]) {
+            const jm = new THREE.Mesh(
+              new THREE.BoxGeometry(0.09, H, 0.08),
+              frameMat
+            );
+            jm.position.set(0, ymid, side * (DpZ * 0.5 - 0.02));
+            g.add(jm);
+          }
+          const wing = new THREE.Group();
+          wing.position.set(0, ymid, d.flip * (DpZ * 0.5 - 0.04));
+          const leaf = new THREE.Mesh(
+            new THREE.BoxGeometry(0.07, H * 0.88, DpZ * 0.48),
+            leafMat
+          );
+          leaf.position.set(d.flip * 0.05, 0, -d.flip * (DpZ * 0.24));
+          wing.add(leaf);
+          wing.rotation.y = d.flip * openY;
+          g.add(wing);
+          scene.add(g);
+        } else {
+          const g = new THREE.Group();
+          g.position.set(d.x, 0, d.z);
+          const top = new THREE.Mesh(
+            new THREE.BoxGeometry(DpX + 0.1, 0.16, 0.11),
+            lintelMat
+          );
+          top.position.set(0, FLOOR_Y + H + 0.05, 0);
+          g.add(top);
+          for (const side of [-1, 1]) {
+            const jm = new THREE.Mesh(
+              new THREE.BoxGeometry(0.08, H, 0.09),
+              frameMat
+            );
+            jm.position.set(side * (DpX * 0.5 - 0.02), ymid, 0);
+            g.add(jm);
+          }
+          const wing = new THREE.Group();
+          wing.position.set(d.flip * (DpX * 0.5 - 0.04), ymid, 0);
+          const leaf = new THREE.Mesh(
+            new THREE.BoxGeometry(DpX * 0.48, H * 0.88, 0.07),
+            leafMat
+          );
+          leaf.position.set(-d.flip * (DpX * 0.24), 0, 0.05);
+          wing.add(leaf);
+          wing.rotation.y = -d.flip * openY;
+          g.add(wing);
+          scene.add(g);
+        }
+      }
+    })();
+
+    (function addRoomFurnitureAndLabels() {
+      function addBox(w, h, d, mat, x, y, z, ry) {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+        m.position.set(x, y, z);
+        if (ry) m.rotation.y = ry;
+        m.castShadow = true;
+        m.receiveShadow = true;
+        scene.add(m);
+        return m;
+      }
+      function addCyl(rt, rb, h, mat, x, y, z, ry) {
+        const g = new THREE.CylinderGeometry(rt, rb, h, 28);
+        const mesh = new THREE.Mesh(g, mat);
+        mesh.position.set(x, y, z);
+        if (ry) mesh.rotation.y = ry;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+        return mesh;
+      }
+      function addSphere(r, mat, x, y, z) {
+        const mesh = new THREE.Mesh(new THREE.SphereGeometry(r, 18, 14), mat);
+        mesh.position.set(x, y, z);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+        return mesh;
+      }
+      function applyEuler(node, rot) {
+        if (rot && typeof rot === "object") {
+          if (rot.order) node.rotation.order = rot.order;
+          node.rotation.set(rot.x || 0, rot.y || 0, rot.z || 0);
+        } else if (typeof rot === "number") {
+          node.rotation.y = rot;
+        }
+      }
+      function loadObjAsset(dir, mtlFile, objFile, pos, targetMaxDim, rot, onErrorFallback) {
+        function idxFromObj(raw, len) {
+          const n = parseInt(raw, 10);
+          if (!Number.isFinite(n)) return null;
+          if (n > 0) return n - 1;
+          if (n < 0) return len + n;
+          return null;
+        }
+        function parseObj(text) {
+          const verts = [];
+          const uvs = [];
+          const positions = [];
+          const outUvs = [];
+          const lines = text.split(/\r?\n/);
+          for (let li = 0; li < lines.length; li++) {
+            const line = lines[li].trim();
+            if (!line || line[0] === "#") continue;
+            if (line.startsWith("v ")) {
+              const p = line.split(/\s+/);
+              verts.push([parseFloat(p[1]), parseFloat(p[2]), parseFloat(p[3])]);
+            } else if (line.startsWith("vt ")) {
+              const p = line.split(/\s+/);
+              uvs.push([parseFloat(p[1]), parseFloat(p[2])]);
+            } else if (line.startsWith("f ")) {
+              const p = line.split(/\s+/).slice(1);
+              if (p.length < 3) continue;
+              for (let i = 1; i < p.length - 1; i++) {
+                const tri = [p[0], p[i], p[i + 1]];
+                for (let k = 0; k < 3; k++) {
+                  const t = tri[k].split("/");
+                  const vi = idxFromObj(t[0], verts.length);
+                  if (vi == null || !verts[vi]) continue;
+                  const v = verts[vi];
+                  positions.push(v[0], v[1], v[2]);
+                  if (t[1] && uvs.length > 0) {
+                    const ti = idxFromObj(t[1], uvs.length);
+                    const uv = ti != null && uvs[ti] ? uvs[ti] : [0, 0];
+                    outUvs.push(uv[0], 1 - uv[1]);
+                  } else {
+                    outUvs.push(0, 0);
+                  }
+                }
+              }
+            }
+          }
+          const g = new THREE.BufferGeometry();
+          g.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+          if (outUvs.length === (positions.length / 3) * 2) {
+            g.setAttribute("uv", new THREE.Float32BufferAttribute(outUvs, 2));
+          }
+          g.computeVertexNormals();
+          return g;
+        }
+        function pickMapFromMtl(text) {
+          const lines = text.split(/\r?\n/);
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (line.toLowerCase().startsWith("map_kd ")) {
+              return line.slice(7).trim();
+            }
+          }
+          return null;
+        }
+        Promise.all([
+          fetch(dir + objFile).then(function (r) { return r.text(); }),
+          fetch(dir + mtlFile).then(function (r) { return r.text(); }),
+        ])
+          .then(function (res) {
+            const geom = parseObj(res[0]);
+            const texFile = pickMapFromMtl(res[1]);
+            let mat = new THREE.MeshStandardMaterial({ color: 0xd2d7de, roughness: 0.72, metalness: 0.08 });
+            if (texFile) {
+              const tex = new THREE.TextureLoader().load(
+                dir + texFile,
+                undefined,
+                undefined,
+                function () {}
+              );
+              tex.colorSpace = THREE.SRGBColorSpace;
+              tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+              mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.72, metalness: 0.06 });
+            }
+            const mesh = new THREE.Mesh(geom, mat);
+            applyEuler(mesh, rot);
+            const box0 = new THREE.Box3().setFromObject(mesh);
+            const size = new THREE.Vector3();
+            box0.getSize(size);
+            const maxDim = Math.max(size.x, size.y, size.z, 1e-6);
+            const autoScale = (targetMaxDim && targetMaxDim > 0) ? (targetMaxDim / maxDim) : 1;
+            mesh.scale.setScalar(autoScale);
+            const box1 = new THREE.Box3().setFromObject(mesh);
+            const center = new THREE.Vector3();
+            box1.getCenter(center);
+            mesh.position.set(pos.x - center.x, pos.y - box1.min.y, pos.z - center.z);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+          })
+          .catch(function () {
+            if (onErrorFallback) onErrorFallback();
+          });
+      }
+      function loadTdsAsset(dir, file3ds, pos, targetMaxDim, rot, onErrorFallback) {
+        let loader = null;
+        try {
+          loader = new THREE.TDSLoader();
+        } catch (e) {
+          if (onErrorFallback) onErrorFallback();
+          return;
+        }
+        loader.setResourcePath(dir);
+        loader.setPath(dir);
+        loader.load(
+          file3ds,
+          function (obj) {
+            applyEuler(obj, rot);
+            const box0 = new THREE.Box3().setFromObject(obj);
+            const size = new THREE.Vector3();
+            box0.getSize(size);
+            const maxDim = Math.max(size.x, size.y, size.z, 1e-6);
+            const autoScale = (targetMaxDim && targetMaxDim > 0) ? (targetMaxDim / maxDim) : 1;
+            obj.scale.setScalar(autoScale);
+            const box1 = new THREE.Box3().setFromObject(obj);
+            const center = new THREE.Vector3();
+            box1.getCenter(center);
+            obj.position.set(pos.x - center.x, pos.y - box1.min.y, pos.z - center.z);
+            obj.traverse(function (child) {
+              if (child.isMesh) {
+                child.castShadow = true;
+                child.receiveShadow = true;
+              }
+            });
+            scene.add(obj);
+          },
+          undefined,
+          function () {
+            if (onErrorFallback) onErrorFallback();
+          }
+        );
+      }
+
+      const wood = new THREE.MeshStandardMaterial({
+        color: 0x7a5c42,
+        roughness: 0.84,
+        metalness: 0.06,
+      });
+      const woodLight = new THREE.MeshStandardMaterial({
+        color: 0x9c7b58,
+        roughness: 0.8,
+        metalness: 0.05,
+      });
+      const fabric = new THREE.MeshStandardMaterial({
+        color: 0x5c6578,
+        roughness: 0.92,
+        metalness: 0.02,
+      });
+      const fabricDeep = new THREE.MeshStandardMaterial({
+        color: 0x3d4a62,
+        roughness: 0.9,
+      });
+      const cushion = new THREE.MeshStandardMaterial({
+        color: 0xa87862,
+        roughness: 0.88,
+      });
+      const white = new THREE.MeshStandardMaterial({
+        color: 0xecf0f4,
+        roughness: 0.45,
+        metalness: 0.1,
+      });
+      const dark = new THREE.MeshStandardMaterial({
+        color: 0x242428,
+        roughness: 0.78,
+        metalness: 0.15,
+      });
+      const metal = new THREE.MeshStandardMaterial({
+        color: 0x8b98a8,
+        roughness: 0.38,
+        metalness: 0.55,
+      });
+      const screenMat = new THREE.MeshStandardMaterial({
+        color: 0x141a24,
+        roughness: 0.35,
+        metalness: 0.35,
+      });
+      const plantGreen = new THREE.MeshStandardMaterial({
+        color: 0x2d6b44,
+        roughness: 0.9,
+      });
+      const leafLight = new THREE.MeshStandardMaterial({
+        color: 0x3d8659,
+        roughness: 0.86,
+      });
+      const soil = new THREE.MeshStandardMaterial({
+        color: 0x3c2a1f,
+        roughness: 0.97,
+        metalness: 0,
+      });
+      const glass = new THREE.MeshPhysicalMaterial({
+        color: 0xdce4ec,
+        roughness: 0.08,
+        metalness: 0.0,
+        transmission: 0.92,
+        thickness: 0.12,
+        clearcoat: 0.75,
+      });
+      const rugTint = new THREE.MeshStandardMaterial({
+        color: 0x4a3f52,
+        roughness: 0.96,
+        metalness: 0,
+      });
+      const marble = new THREE.MeshStandardMaterial({
+        color: 0xe8edf2,
+        roughness: 0.35,
+        metalness: 0.08,
+      });
+      const flowerPetal = new THREE.MeshStandardMaterial({
+        color: 0xc94b7a,
+        roughness: 0.74,
+        metalness: 0.02,
+      });
+      const flowerCream = new THREE.MeshStandardMaterial({
+        color: 0xf2e6c8,
+        roughness: 0.78,
+        metalness: 0.02,
+      });
+      const flowerAccent = new THREE.MeshStandardMaterial({
+        color: 0xd65a4a,
+        roughness: 0.68,
+        metalness: 0.03,
+      });
+
+      const R0 = ROOMS[0];
+      const R1 = ROOMS[1];
+      const R2 = ROOMS[2];
+      const R3 = ROOMS[3];
+
+      function addStoveFallback(x, z, ry) {
+        const body = addBox(0.78, 0.78, 0.6, metal, x, FLOOR_Y + 0.39, z, ry);
+        addBox(0.72, 0.05, 0.54, dark, x, FLOOR_Y + 0.82, z, ry);
+        for (const sx of [-0.22, 0.22]) {
+          for (const sz of [-0.16, 0.16]) {
+            addCyl(0.08, 0.08, 0.025, dark, x + sx, FLOOR_Y + 0.86, z + sz, 0);
+          }
+        }
+        addBox(0.52, 0.34, 0.035, screenMat, x, FLOOR_Y + 0.45, z - 0.31, ry);
+        return body;
+      }
+
+      /** Clear freestanding gas range (procedural) — reads well in WebGL vs heavy broken OBJ imports */
+      function addKitchenGasRange(x, z, ry) {
+        const g = new THREE.Group();
+        const enamel = new THREE.MeshStandardMaterial({
+          color: 0xf2f4f7,
+          roughness: 0.42,
+          metalness: 0.08,
+        });
+        const cooktop = new THREE.MeshStandardMaterial({
+          color: 0x141820,
+          roughness: 0.35,
+          metalness: 0.22,
+        });
+        const chrome = new THREE.MeshStandardMaterial({
+          color: 0xdfe6ef,
+          roughness: 0.22,
+          metalness: 0.78,
+        });
+        const doorGlass = new THREE.MeshStandardMaterial({
+          color: 0x1c2430,
+          roughness: 0.12,
+          metalness: 0.45,
+        });
+        const w = 0.7;
+        const d = 0.68;
+        const h = 0.9;
+        const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), enamel);
+        body.position.set(0, FLOOR_Y + h * 0.5, 0);
+        body.castShadow = true;
+        body.receiveShadow = true;
+        g.add(body);
+        const top = new THREE.Mesh(new THREE.BoxGeometry(w - 0.04, 0.035, d - 0.04), cooktop);
+        top.position.set(0, FLOOR_Y + h + 0.018, 0);
+        top.castShadow = true;
+        top.receiveShadow = true;
+        g.add(top);
+        const ringGeo = new THREE.TorusGeometry(0.048, 0.012, 10, 28);
+        const ringMat = new THREE.MeshStandardMaterial({
+          color: 0x0a0c10,
+          roughness: 0.55,
+          metalness: 0.35,
+        });
+        const offs = [
+          [-0.18, -0.14],
+          [0.18, -0.14],
+          [-0.18, 0.14],
+          [0.18, 0.14],
+        ];
+        for (let i = 0; i < offs.length; i++) {
+          const ring = new THREE.Mesh(ringGeo, ringMat);
+          ring.rotation.x = Math.PI * 0.5;
+          ring.position.set(offs[i][0], FLOOR_Y + h + 0.036, offs[i][1]);
+          ring.castShadow = true;
+          ring.receiveShadow = true;
+          g.add(ring);
+        }
+        const door = new THREE.Mesh(new THREE.BoxGeometry(w - 0.12, 0.44, 0.03), doorGlass);
+        door.position.set(0, FLOOR_Y + 0.38, d * 0.5 - 0.02);
+        door.castShadow = true;
+        door.receiveShadow = true;
+        g.add(door);
+        const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.36, 14), chrome);
+        handle.rotation.z = Math.PI * 0.5;
+        handle.position.set(0, FLOOR_Y + 0.52, d * 0.5 + 0.02);
+        handle.castShadow = true;
+        g.add(handle);
+        for (let k = 0; k < 5; k++) {
+          const knob = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.028, 0.032, 18), chrome);
+          knob.rotation.x = Math.PI * 0.5;
+          knob.position.set(-0.2 + k * 0.1, FLOOR_Y + h + 0.028, -d * 0.5 + 0.12);
+          knob.castShadow = true;
+          g.add(knob);
+        }
+        const plinth = new THREE.Mesh(new THREE.BoxGeometry(w + 0.02, 0.06, d + 0.02), dark);
+        plinth.position.set(0, FLOOR_Y + 0.03, 0);
+        plinth.castShadow = true;
+        plinth.receiveShadow = true;
+        g.add(plinth);
+        g.position.set(x, 0, z);
+        if (ry) g.rotation.y = ry;
+        scene.add(g);
+        return g;
+      }
+
+      function addPlantPot(x, z, scale) {
+        const s = scale || 1;
+        addCyl(0.16 * s, 0.13 * s, 0.24 * s, wood, x, FLOOR_Y + 0.12 * s, z, 0);
+        addCyl(0.12 * s, 0.12 * s, 0.04 * s, soil, x, FLOOR_Y + 0.24 * s, z, 0);
+        addSphere(0.16 * s, plantGreen, x - 0.07 * s, FLOOR_Y + 0.41 * s, z - 0.03 * s);
+        addSphere(0.15 * s, leafLight, x + 0.05 * s, FLOOR_Y + 0.39 * s, z + 0.06 * s);
+        addSphere(0.14 * s, plantGreen, x + 0.02 * s, FLOOR_Y + 0.5 * s, z - 0.05 * s);
+      }
+
+      /** Upholstered double bed (procedural) — distinct from previous simple box bed */
+      function addBedroomBedUpholstered(cx, cz, ry) {
+        const g = new THREE.Group();
+        const w = 2.12;
+        const dep = 1.52;
+        const matH = 0.36;
+        const platH = 0.14;
+        const platY = FLOOR_Y + platH * 0.5;
+        const platform = new THREE.Mesh(new THREE.BoxGeometry(w + 0.06, platH, dep + 0.06), wood);
+        platform.position.set(0, platY, 0);
+        platform.castShadow = true;
+        platform.receiveShadow = true;
+        g.add(platform);
+        const railH = 0.22;
+        const railT = new THREE.Mesh(new THREE.BoxGeometry(w - 0.02, railH, 0.06), woodLight);
+        railT.position.set(0, FLOOR_Y + platH + railH * 0.5, -dep * 0.5 + 0.04);
+        railT.castShadow = true;
+        railT.receiveShadow = true;
+        g.add(railT);
+        const railB = railT.clone();
+        railB.position.set(0, FLOOR_Y + platH + railH * 0.5, dep * 0.5 - 0.04);
+        g.add(railB);
+        const baseY = FLOOR_Y + platH + railH + matH * 0.5 + 0.02;
+        const mattress = new THREE.Mesh(
+          new THREE.BoxGeometry(w - 0.1, matH, dep - 0.14),
+          fabricDeep
+        );
+        mattress.position.set(0, baseY, 0);
+        mattress.castShadow = true;
+        mattress.receiveShadow = true;
+        g.add(mattress);
+        const duvet = new THREE.Mesh(
+          new THREE.BoxGeometry(w - 0.14, 0.07, dep - 0.28),
+          fabric
+        );
+        duvet.position.set(0, baseY + 0.08, 0.06);
+        duvet.castShadow = true;
+        duvet.receiveShadow = true;
+        g.add(duvet);
+        const hbW = w + 0.02;
+        const hbH = 1.18;
+        const hbD = 0.12;
+        const headboard = new THREE.Mesh(new THREE.BoxGeometry(hbW, hbH, hbD), cushion);
+        headboard.position.set(0, FLOOR_Y + hbH * 0.5 + 0.02, dep * 0.5 - hbD * 0.5 + 0.01);
+        headboard.castShadow = true;
+        headboard.receiveShadow = true;
+        g.add(headboard);
+        const btnGeo = new THREE.SphereGeometry(0.028, 10, 8);
+        const btnMat = new THREE.MeshStandardMaterial({
+          color: 0x6d5a52,
+          roughness: 0.82,
+          metalness: 0.04,
+        });
+        const hx0 = -hbW * 0.38;
+        const hx1 = hbW * 0.38;
+        const hy0 = FLOOR_Y + 0.42;
+        const hy1 = FLOOR_Y + 0.95;
+        const hz = dep * 0.5 + 0.07;
+        for (let bx = 0; bx < 5; bx++) {
+          for (let by = 0; by < 3; by++) {
+            const t = bx / 4;
+            const u = by / 2;
+            const btn = new THREE.Mesh(btnGeo, btnMat);
+            btn.position.set(hx0 + (hx1 - hx0) * t, hy0 + (hy1 - hy0) * u, hz);
+            btn.castShadow = true;
+            g.add(btn);
+          }
+        }
+        const foot = new THREE.Mesh(new THREE.BoxGeometry(hbW * 0.92, 0.34, 0.08), woodLight);
+        foot.position.set(0, FLOOR_Y + 0.2, -dep * 0.5 + 0.05);
+        foot.castShadow = true;
+        foot.receiveShadow = true;
+        g.add(foot);
+        const legGeo = new THREE.CylinderGeometry(0.038, 0.042, 0.2, 12);
+        for (const sx of [-w * 0.44, w * 0.44]) {
+          for (const sz of [-dep * 0.44, dep * 0.44]) {
+            const leg = new THREE.Mesh(legGeo, metal);
+            leg.position.set(sx, FLOOR_Y + 0.1, sz);
+            leg.castShadow = true;
+            leg.receiveShadow = true;
+            g.add(leg);
+          }
+        }
+        const pillowL = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.13, 0.52), white);
+        pillowL.position.set(-0.44, baseY + matH * 0.5 + 0.09, -0.1);
+        pillowL.castShadow = true;
+        g.add(pillowL);
+        const pillowR = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.13, 0.52), white);
+        pillowR.position.set(0.44, baseY + matH * 0.5 + 0.09, -0.1);
+        pillowR.castShadow = true;
+        g.add(pillowR);
+        g.position.set(cx, 0, cz);
+        if (ry) g.rotation.y = ry;
+        scene.add(g);
+        return g;
+      }
+
+      /** Stems + leaves + blooms above vase center (dim ≈ loadObjAsset targetMaxDim) */
+      function addFlowersInVase(x, z, dim) {
+        const d = Math.max(0.45, Math.min(dim || 0.75, 1.35));
+        const k = d / 0.75;
+        const baseY = FLOOR_Y + 0.28 * k;
+        const stemH = 0.36 * k;
+        const stemR = 0.014 * k;
+        const offs = [
+          [0, 0],
+          [0.07 * k, 0.04 * k],
+          [-0.06 * k, 0.05 * k],
+          [0.04 * k, -0.07 * k],
+          [-0.05 * k, -0.04 * k],
+        ];
+        for (let i = 0; i < offs.length; i++) {
+          const dx = offs[i][0];
+          const dz = offs[i][1];
+          addCyl(stemR, stemR * 0.85, stemH + (i % 2) * 0.05 * k, plantGreen, x + dx, baseY + stemH * 0.5, z + dz, 0);
+        }
+        const yLeaf = baseY + stemH * 0.55;
+        addSphere(0.09 * k, leafLight, x + 0.08 * k, yLeaf, z + 0.02 * k);
+        addSphere(0.08 * k, plantGreen, x - 0.07 * k, yLeaf + 0.04 * k, z - 0.03 * k);
+        addSphere(0.065 * k, leafLight, x + 0.02 * k, yLeaf - 0.02 * k, z + 0.09 * k);
+        const yTop = baseY + stemH + 0.06 * k;
+        addSphere(0.11 * k, flowerPetal, x, yTop, z);
+        addSphere(0.065 * k, flowerCream, x + 0.11 * k, yTop - 0.03 * k, z - 0.06 * k);
+        addSphere(0.06 * k, flowerAccent, x - 0.1 * k, yTop - 0.02 * k, z + 0.07 * k);
+        addSphere(0.055 * k, flowerCream, x + 0.05 * k, yTop + 0.05 * k, z + 0.1 * k);
+      }
+      function addCoffeeTable(cx, cz) {
+        addBox(1.15, 0.04, 0.68, glass, cx, FLOOR_Y + 0.37, cz, 0);
+        for (const sx of [-0.46, 0.46]) {
+          for (const sz of [-0.24, 0.24]) {
+            addCyl(0.023, 0.023, 0.33, metal, cx + sx, FLOOR_Y + 0.18, cz + sz, 0);
+          }
+        }
+      }
+
+      function addDiningChair(cx, cz, ry) {
+        addBox(0.46, 0.04, 0.44, fabricDeep, cx, FLOOR_Y + 0.46, cz, ry);
+        addBox(0.46, 0.48, 0.05, fabric, cx, FLOOR_Y + 0.7, cz - 0.2, ry);
+        for (const sx of [-0.18, 0.18]) {
+          for (const sz of [-0.16, 0.16]) {
+            addCyl(0.018, 0.018, 0.44, wood, cx + sx, FLOOR_Y + 0.22, cz + sz, ry);
+          }
+        }
+      }
+
+      /* Living — downloaded realistic assets only */
+      loadObjAsset(
+        "assets/models/free3d/sofa_living/",
+        "sofa.mtl",
+        "sofa.obj",
+        new THREE.Vector3(R0.cx + 0.1, FLOOR_Y + 0.01, R0.z1 - 0.95),
+        2.55,
+        { x: -Math.PI * 0.5, y: Math.PI, z: 0 }
+      );
+      loadObjAsset(
+        "assets/models/free3d/table_new/",
+        "table.mtl",
+        "table.obj",
+        new THREE.Vector3(R0.cx + 0.05, FLOOR_Y + 0.01, R0.cz + 0.15),
+        1.15,
+        { x: -Math.PI * 0.5, y: 0, z: 0 }
+      );
+      loadObjAsset(
+        "assets/models/free3d/flowerpot_real/",
+        "flowerpot.mtl",
+        "flowerpot.obj",
+        new THREE.Vector3(R0.x1 - 0.55, FLOOR_Y + 0.01, R0.z0 + 0.62),
+        1.12,
+        { x: -Math.PI * 0.5, y: Math.PI * 0.12, z: 0 }
+      );
+      addFlowersInVase(R0.x1 - 0.55, R0.z0 + 0.62, 1.12);
+      loadTdsAsset(
+        "assets/models/free3d/tv_new/",
+        "TV set Sony Bravia N230814.3DS",
+        new THREE.Vector3(R0.cx + 0.02, FLOOR_Y + 0.01, R0.z0 + 0.48),
+        1.8,
+        { x: 0, y: Math.PI, z: 0 }
+      );
+
+      /* Kitchen — newly downloaded realistic appliances from free3D */
+      loadObjAsset(
+        "assets/models/custom/refrigerator_v1/",
+        "refrigerator.mtl",
+        "refrigerator.obj",
+        new THREE.Vector3(R1.cx + 1.45, FLOOR_Y + 0.02, R1.z0 + 0.62),
+        1.78,
+        { x: -Math.PI * 0.5, y: Math.PI, z: 0 },
+        function () {
+          addBox(0.64, 1.62, 0.54, metal, R1.cx + 1.45, FLOOR_Y + 0.81, R1.z0 + 0.62, Math.PI);
+        }
+      );
+      addKitchenGasRange(R1.x0 + 0.95, R1.z0 + 0.68, Math.PI);
+      /* Kitchen dining — pushed toward south wall (deeper in kitchen) */
+      const kDineZ = R1.cz - 0.52;
+      loadObjAsset(
+        "assets/models/free3d/kitchen_dining/",
+        "table.mtl",
+        "table.obj",
+        new THREE.Vector3(R1.cx - 0.72, FLOOR_Y + 0.01, kDineZ),
+        1.18,
+        { x: -Math.PI * 0.5, y: 0, z: 0 }
+      );
+      loadObjAsset(
+        "assets/models/free3d/kitchen_dining/",
+        "chair.mtl",
+        "chair.obj",
+        new THREE.Vector3(R1.cx - 1.5, FLOOR_Y + 0.16, kDineZ),
+        0.62,
+        { x: 0, y: Math.PI * 0.5, z: 0 }
+      );
+      loadObjAsset(
+        "assets/models/free3d/kitchen_dining/",
+        "chair.mtl",
+        "chair.obj",
+        new THREE.Vector3(R1.cx + 0.06, FLOOR_Y + 0.16, kDineZ),
+        0.62,
+        { x: 0, y: -Math.PI * 0.5, z: 0 }
+      );
+
+      /* Corridor — console; all corridor vases in one row (same z, stepped x) */
+      const cxConsole = R2.cx + 0.15;
+      const czConsole = R2.cz;
+      loadObjAsset(
+        "assets/models/free3d/table_new/",
+        "table.mtl",
+        "table.obj",
+        new THREE.Vector3(cxConsole, FLOOR_Y + 0.01, czConsole),
+        0.92,
+        { x: -Math.PI * 0.5, y: 0, z: 0 }
+      );
+      /* East + south: toward kitchen wall; flowerpot needs same yaw tweak as living or it lies on its side */
+      const hallVasesZ = R2.cz - 1.42;
+      const hallVasesX0 = R2.cx + 0.28;
+      const hallVasesDx = 0.6;
+      loadObjAsset(
+        "assets/models/free3d/pot_real/",
+        "pot.mtl",
+        "pot.obj",
+        new THREE.Vector3(hallVasesX0, FLOOR_Y + 0.01, hallVasesZ),
+        0.58,
+        { x: -Math.PI * 0.5, y: 0, z: 0 }
+      );
+      addFlowersInVase(hallVasesX0, hallVasesZ, 0.58);
+      loadObjAsset(
+        "assets/models/free3d/flowerpot_real/",
+        "flowerpot.mtl",
+        "flowerpot.obj",
+        new THREE.Vector3(hallVasesX0 + hallVasesDx, FLOOR_Y + 0.01, hallVasesZ),
+        0.78,
+        { x: -Math.PI * 0.5, y: Math.PI * 0.12, z: 0 }
+      );
+      addFlowersInVase(hallVasesX0 + hallVasesDx, hallVasesZ, 0.78);
+      loadObjAsset(
+        "assets/models/free3d/pot_real/",
+        "pot.mtl",
+        "pot.obj",
+        new THREE.Vector3(hallVasesX0 + 2 * hallVasesDx, FLOOR_Y + 0.01, hallVasesZ),
+        0.76,
+        { x: -Math.PI * 0.5, y: 0, z: 0 }
+      );
+      addFlowersInVase(hallVasesX0 + 2 * hallVasesDx, hallVasesZ, 0.76);
+
+      /* Bedroom — headboard to north wall; upholstered procedural bed + OBJ nightstands */
+      const bedCx = R3.cx + 0.12;
+      const bedCz = R3.z1 - 1.02;
+      addBedroomBedUpholstered(bedCx, bedCz, 0);
+      loadObjAsset(
+        "assets/models/free3d/nightstand/",
+        "nightstand.mtl",
+        "nightstand.obj",
+        new THREE.Vector3(bedCx - 1.08, FLOOR_Y + 0.01, bedCz + 0.42),
+        0.48,
+        { x: -Math.PI * 0.5, y: 0, z: 0 }
+      );
+      loadObjAsset(
+        "assets/models/free3d/nightstand/",
+        "nightstand.mtl",
+        "nightstand.obj",
+        new THREE.Vector3(bedCx + 1.08, FLOOR_Y + 0.01, bedCz + 0.42),
+        0.48,
+        { x: -Math.PI * 0.5, y: 0, z: 0 }
+      );
+
+      function textPlane(text, worldW, worldD, cx, cz) {
+        const ar = worldW / Math.max(worldD, 1e-4);
+        const cw = 512;
+        const ch = Math.max(48, Math.round(cw / ar));
+        const canvas = document.createElement("canvas");
+        canvas.width = cw;
+        canvas.height = ch;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "rgba(18,24,32,0.58)";
+        ctx.fillRect(0, 0, cw, ch);
+        ctx.strokeStyle = "rgba(255,255,255,0.22)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(3, 3, cw - 6, ch - 6);
+        ctx.fillStyle = "#e6edf3";
+        const fs = Math.min(52, Math.floor(Math.min(cw, ch) * 0.14));
+        ctx.font = "bold " + fs + "px system-ui,Segoe UI,sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, cw / 2, ch / 2);
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const mat = new THREE.MeshBasicMaterial({
+          map: tex,
+          transparent: true,
+          depthWrite: false,
+        });
+        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(worldW, worldD), mat);
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.position.set(cx, FLOOR_Y + 0.055, cz);
+        scene.add(mesh);
+      }
+      textPlane("LIVING ROOM", 2.5, 0.62, R0.cx, R0.cz + 1.05);
+      textPlane("KITCHEN", 2.2, 0.55, R1.cx, R1.cz - 1.05);
+      textPlane("HALL", 1.2, 0.42, R2.cx, R2.cz);
+      textPlane("BEDROOM", 2.1, 0.58, R3.cx + 0.05, R3.cz - 1.55);
+    })();
+
+    let startPoint = null;
+    let endPoint = null;
+
+    const markerGeo = new THREE.SphereGeometry(0.18, 24, 24);
+    const startMat = new THREE.MeshStandardMaterial({ color: 0x3fb950 });
+    const endMat = new THREE.MeshStandardMaterial({ color: 0xf85149 });
+    let startMesh = null;
+    let endMesh = null;
+    let pathLine = null;
+    /** Last path samples for replay */
+    let lastPathFlat = null;
+    let pathCurveSamples = null;
+
+    function buildRobot() {
+      const root = new THREE.Group();
+      const tireMat = new THREE.MeshStandardMaterial({
+        color: 0x1c1c1c,
+        roughness: 0.92,
+        metalness: 0.05,
+      });
+      const rimMat = new THREE.MeshStandardMaterial({
+        color: 0x9aa3ad,
+        metalness: 0.55,
+        roughness: 0.38,
+      });
+      const frameMat = new THREE.MeshStandardMaterial({
+        color: 0xb4bcc8,
+        metalness: 0.65,
+        roughness: 0.32,
+      });
+      const seatMat = new THREE.MeshStandardMaterial({
+        color: 0x2f5f8a,
+        roughness: 0.88,
+        metalness: 0.05,
+      });
+      const backMat = new THREE.MeshStandardMaterial({
+        color: 0x1a3550,
+        roughness: 0.9,
+      });
+      const skinMat = new THREE.MeshStandardMaterial({
+        color: 0xd4a574,
+        roughness: 0.82,
+      });
+      const shirtMat = new THREE.MeshStandardMaterial({
+        color: 0x4a6fa5,
+        roughness: 0.85,
+      });
+
+      function wheelUnit(radius, width) {
+        const g = new THREE.Group();
+        const tireGeo = new THREE.CylinderGeometry(radius, radius, width, 26);
+        tireGeo.rotateZ(Math.PI / 2);
+        g.add(new THREE.Mesh(tireGeo, tireMat));
+        const rimGeo = new THREE.CylinderGeometry(
+          radius * 0.52,
+          radius * 0.52,
+          width + 0.012,
+          18
+        );
+        rimGeo.rotateZ(Math.PI / 2);
+        g.add(new THREE.Mesh(rimGeo, rimMat));
+        const spoke = new THREE.Mesh(
+          new THREE.BoxGeometry(width + 0.02, radius * 0.85, 0.025),
+          rimMat
+        );
+        g.add(spoke);
+        const spoke2 = spoke.clone();
+        spoke2.rotation.y = Math.PI / 2;
+        g.add(spoke2);
+        return g;
+      }
+
+      // +Z forward; large rear wheels at -Z, casters at +Z
+      const rearR = 0.27;
+      const rearW = 0.036;
+      const rearL = wheelUnit(rearR, rearW);
+      rearL.position.set(-0.39, rearR, -0.14);
+      root.add(rearL);
+      const rearRgt = wheelUnit(rearR, rearW);
+      rearRgt.position.set(0.39, rearR, -0.14);
+      root.add(rearRgt);
+
+      const castR = 0.07;
+      const castW = 0.048;
+      const c1 = wheelUnit(castR, castW);
+      c1.position.set(-0.22, castR, 0.38);
+      root.add(c1);
+      const c2 = wheelUnit(castR, castW);
+      c2.position.set(0.22, castR, 0.38);
+      root.add(c2);
+
+      const railGeo = new THREE.BoxGeometry(0.035, 0.038, 0.78);
+      const railL = new THREE.Mesh(railGeo, frameMat);
+      railL.position.set(-0.33, 0.32, 0.06);
+      root.add(railL);
+      const railR = new THREE.Mesh(railGeo, frameMat);
+      railR.position.set(0.33, 0.32, 0.06);
+      root.add(railR);
+      const cross = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.035, 0.035), frameMat);
+      cross.position.set(0, 0.3, -0.12);
+      root.add(cross);
+
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.055, 0.42), seatMat);
+      seat.position.set(0, 0.54, 0.02);
+      root.add(seat);
+
+      const back = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.5, 0.055), backMat);
+      back.position.set(0, 0.8, -0.2);
+      root.add(back);
+
+      const armGeo = new THREE.BoxGeometry(0.055, 0.085, 0.48);
+      const armL = new THREE.Mesh(armGeo, frameMat);
+      armL.position.set(-0.265, 0.66, 0.04);
+      root.add(armL);
+      const armR = new THREE.Mesh(armGeo, frameMat);
+      armR.position.set(0.265, 0.66, 0.04);
+      root.add(armR);
+
+      const foot = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.022, 0.2), frameMat);
+      foot.position.set(0, 0.17, 0.34);
+      foot.rotation.x = 0.12;
+      root.add(foot);
+
+      const handleBar = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.028, 0.028), frameMat);
+      handleBar.position.set(0, 1.04, -0.26);
+      root.add(handleBar);
+      const hL = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.022, 0.022, 0.1, 10),
+        frameMat
+      );
+      hL.rotation.z = Math.PI / 2;
+      hL.position.set(-0.24, 1.04, -0.26);
+      root.add(hL);
+      const hR = hL.clone();
+      hR.position.x = 0.24;
+      root.add(hR);
+
+      const torso = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.3, 0.2), shirtMat);
+      torso.position.set(0, 0.8, -0.02);
+      root.add(torso);
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.11, 18, 14), skinMat);
+      head.position.set(0, 1.05, -0.02);
+      root.add(head);
+
+      root.visible = false;
+      return root;
+    }
+
+    const robotGroup = buildRobot();
+    scene.add(robotGroup);
+    robotGroup.add(wheelCam);
+
+    /** Shared exclusion for wheelchair clearance + camera-mounted “object detection” rays */
+    function meshExcludedFromSensor(mesh) {
+      let o = mesh;
+      while (o) {
+        if (o === robotGroup) return true;
+        o = o.parent;
+      }
+      if (pathLine && mesh === pathLine) return true;
+      if (startMesh && mesh === startMesh) return true;
+      if (endMesh && mesh === endMesh) return true;
+      return false;
+    }
+
+    /** Top-level object under `scene` for grouping multi-mesh assets */
+    function getSensorDetectionRoot(mesh) {
+      let n = mesh;
+      while (n.parent && n.parent !== scene) {
+        n = n.parent;
+      }
+      return n;
+    }
+
+    /** Horizontal raycasts from wheelchair — distance to nearest mesh (walls, furniture, etc.) */
+    const clearanceRaycaster = new THREE.Raycaster();
+    const CLEARANCE_FAR = 5.5;
+    const CLEARANCE_ORIGIN_Y = FLOOR_Y + 0.4;
+    clearanceRaycaster.far = CLEARANCE_FAR;
+    const _fwd = new THREE.Vector3();
+    const _dir = new THREE.Vector3();
+    const _origin = new THREE.Vector3();
+
+    function firstClearanceHitDistance(origin, direction) {
+      clearanceRaycaster.set(origin, direction);
+      const hits = clearanceRaycaster.intersectObjects(scene.children, true);
+      for (let hi = 0; hi < hits.length; hi++) {
+        const h = hits[hi];
+        if (h.object && h.object.isMesh && !meshExcludedFromSensor(h.object)) {
+          return h.distance;
+        }
+      }
+      return null;
+    }
+
+    /**
+     * Wheelchair-mounted “RGB-D style” stub: multiple rays through wheelCam NDC samples.
+     * Dedupes hits per scene root; exposes distances for replanning hooks (see README).
+     */
+    const cameraSensorRaycaster = new THREE.Raycaster();
+    const _ndc = new THREE.Vector2();
+    const WHEELCHAIR_SENSOR_NDC = [
+      [0, 0],
+      [-0.42, 0],
+      [-0.22, 0],
+      [0.22, 0],
+      [0.42, 0],
+      [0, -0.18],
+      [-0.28, -0.18],
+      [0.28, -0.18],
+      [-0.15, -0.32],
+      [0.15, -0.32],
+    ];
+
+    const wheelchairCameraSensor = (function buildWheelchairCameraSensor() {
+      const config = {
+        maxRangeM: 12,
+        /** If nearest hit is closer than this, onNearObstacle may fire (once per threshold crossing). */
+        minAlertDistanceM: 0.85,
+        ndcSamples: WHEELCHAIR_SENSOR_NDC,
+      };
+      let lastScan = null;
+      let lastAlertDist = Infinity;
+      let onNearObstacle = null;
+
+      function isForwardSectorNdc(nx, ny) {
+        return Math.abs(nx) <= 0.28 && ny >= -0.22 && ny <= 0.08;
+      }
+
+      function scan() {
+        cameraSensorRaycaster.far = config.maxRangeM;
+        const perRoot = new Map();
+        const perRay = [];
+        for (let ri = 0; ri < config.ndcSamples.length; ri++) {
+          const sample = config.ndcSamples[ri];
+          const nx = sample[0];
+          const ny = sample[1];
+          _ndc.set(nx, ny);
+          cameraSensorRaycaster.setFromCamera(_ndc, wheelCam);
+          const hits = cameraSensorRaycaster.intersectObjects(scene.children, true);
+          let first = null;
+          for (let hi = 0; hi < hits.length; hi++) {
+            const h = hits[hi];
+            if (!h.object || !h.object.isMesh || meshExcludedFromSensor(h.object)) continue;
+            const root = getSensorDetectionRoot(h.object);
+            first = {
+              ndc: { x: nx, y: ny },
+              distance: h.distance,
+              point: h.point.clone(),
+              mesh: h.object,
+              root: root,
+              rootId: root.uuid,
+            };
+            const prev = perRoot.get(root.uuid);
+            if (!prev || h.distance < prev.distance) {
+              perRoot.set(root.uuid, {
+                rootId: root.uuid,
+                distance: h.distance,
+                point: h.point.clone(),
+                mesh: h.object,
+                root: root,
+              });
+            }
+            break;
+          }
+          perRay.push({ ndc: { x: nx, y: ny }, hit: first });
+        }
+        const detections = Array.from(perRoot.values()).sort(function (a, b) {
+          return a.distance - b.distance;
+        });
+        let forwardMin = Infinity;
+        for (let i = 0; i < perRay.length; i++) {
+          const pr = perRay[i];
+          if (!pr.hit) continue;
+          if (isForwardSectorNdc(pr.ndc.x, pr.ndc.y)) {
+            forwardMin = Math.min(forwardMin, pr.hit.distance);
+          }
+        }
+        if (!Number.isFinite(forwardMin)) forwardMin = null;
+        const nearest = detections.length ? detections[0] : null;
+        lastScan = {
+          time: typeof performance !== "undefined" ? performance.now() : Date.now(),
+          detections: detections,
+          nearest: nearest,
+          forwardClearanceM: forwardMin,
+          rays: perRay,
+          configSnapshot: {
+            maxRangeM: config.maxRangeM,
+            minAlertDistanceM: config.minAlertDistanceM,
+          },
+        };
+        if (!nearest || nearest.distance >= config.minAlertDistanceM) {
+          lastAlertDist = Infinity;
+        } else {
+          if (onNearObstacle && lastAlertDist >= config.minAlertDistanceM) {
+            try {
+              onNearObstacle(lastScan);
+            } catch (err) {
+              console.warn("wheelchairCameraSensor.onNearObstacle", err);
+            }
+          }
+          lastAlertDist = nearest.distance;
+        }
+        return lastScan;
+      }
+
+      return {
+        scan: scan,
+        get lastScan() {
+          return lastScan;
+        },
+        get config() {
+          return config;
+        },
+        setMaxRangeM: function (m) {
+          if (m > 0.5) config.maxRangeM = m;
+        },
+        setMinAlertDistanceM: function (m) {
+          if (m > 0.05) config.minAlertDistanceM = m;
+        },
+        setNdcSamples: function (samples) {
+          if (samples && samples.length) config.ndcSamples = samples;
+        },
+        get onNearObstacle() {
+          return onNearObstacle;
+        },
+        set onNearObstacle(fn) {
+          onNearObstacle = typeof fn === "function" ? fn : null;
+          lastAlertDist = Infinity;
+        },
+        /** Call after a replan / clear so alert can fire again on next close approach */
+        resetAlertLatch: function () {
+          lastAlertDist = Infinity;
+        },
+      };
+    })();
+
+    ROBOT_HOUSE.wheelchairCameraSensor = wheelchairCameraSensor;
+
+    /**
+     * @returns {string} short HUD line: F/L/R/B distances in meters (world XZ, seat height).
+     */
+    function formatWheelchairClearances() {
+      robotGroup.getWorldPosition(_origin);
+      _origin.y = CLEARANCE_ORIGIN_Y;
+      const ry = robotGroup.rotation.y;
+      const c = Math.cos(ry);
+      const s = Math.sin(ry);
+      _fwd.set(s, 0, c);
+      const labels = ["F", "L", "R", "B"];
+      const dirs = [
+        _fwd,
+        new THREE.Vector3(-c, 0, s),
+        new THREE.Vector3(c, 0, -s),
+        new THREE.Vector3(-s, 0, -c),
+      ];
+      const parts = [];
+      for (let i = 0; i < 4; i++) {
+        _dir.copy(dirs[i]);
+        const d = firstClearanceHitDistance(_origin, _dir);
+        parts.push(
+          labels[i] +
+            " " +
+            (d == null ? "—" : d.toFixed(2) + "m")
+        );
+      }
+      return parts.join(" · ");
+    }
+
+    let moveState = null;
+
+    function sampleCurvePoints(ptsVec3) {
+      const curve = new THREE.CatmullRomCurve3(ptsVec3, false, "catmullrom", 0.2);
+      const n = Math.max(48, ptsVec3.length * 24);
+      return curve.getPoints(n);
+    }
+
+    function buildCumulativeLengths(samples) {
+      const cum = [0];
+      let t = 0;
+      for (let i = 0; i < samples.length - 1; i++) {
+        t += samples[i].distanceTo(samples[i + 1]);
+        cum.push(t);
+      }
+      return { cum, total: t };
+    }
+
+    function stopRobotAnim() {
+      moveState = null;
+      vlaMoveInFlight = false;
+    }
+
+    function placeRobotOnPath(samples, distAlong) {
+      const { cum, total } = moveState.lenInfo;
+      const d = Math.min(Math.max(distAlong, 0), total);
+      let i = 0;
+      while (i < cum.length - 1 && cum[i + 1] < d) i++;
+      const a = samples[i];
+      const b = samples[i + 1] || samples[i];
+      const segStart = cum[i];
+      const segEnd = cum[i + 1] ?? segStart;
+      const u = segEnd > segStart ? (d - segStart) / (segEnd - segStart) : 0;
+      const x = THREE.MathUtils.lerp(a.x, b.x, u);
+      const z = THREE.MathUtils.lerp(a.z, b.z, u);
+      robotGroup.position.set(x, FLOOR_Y, z);
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      if (Math.abs(dx) + Math.abs(dz) > 1e-5) {
+        robotGroup.rotation.y = Math.atan2(dx, dz);
+      }
+    }
+
+    function startRobotAlongSamples(samples) {
+      if (!samples || samples.length < 2) return;
+      pathCurveSamples = samples;
+      const lenInfo = buildCumulativeLengths(samples);
+      moveState = {
+        samples,
+        lenInfo,
+        dist: 0,
+        speed: 0.6,
+      };
+      robotGroup.visible = true;
+      wheelchairCameraSensor.resetAlertLatch();
+      placeRobotOnPath(samples, 0);
+      setStatus("Wheelchair moving along path…");
+    }
+
+    function setStatus(msg) {
+      document.getElementById("status").textContent = msg;
+    }
+
+    function updateMarkers() {
+      if (startMesh) scene.remove(startMesh);
+      if (endMesh) scene.remove(endMesh);
+      startMesh = endMesh = null;
+      if (startPoint) {
+        startMesh = new THREE.Mesh(markerGeo, startMat);
+        startMesh.position.set(startPoint.x, FLOOR_Y + 0.2, startPoint.z);
+        scene.add(startMesh);
+      }
+      if (endPoint) {
+        endMesh = new THREE.Mesh(markerGeo, endMat);
+        endMesh.position.set(endPoint.x, FLOOR_Y + 0.2, endPoint.z);
+        scene.add(endMesh);
+      }
+    }
+
+    function clearPath() {
+      stopRobotAnim();
+      robotGroup.visible = false;
+      lastPathFlat = null;
+      pathCurveSamples = null;
+      dynamicObstacleCells.clear();
+      if (typeof wheelchairCameraSensor !== "undefined") {
+        wheelchairCameraSensor.resetAlertLatch();
+      }
+      if (pathLine) {
+        scene.remove(pathLine);
+        pathLine.geometry.dispose();
+        pathLine.material.dispose();
+        pathLine = null;
+      }
+    }
+
+    /** Dynamic replan: forward clearance too low → block grid cells at hit point, A* from here → goal */
+    const REPLAN_MIN_CLEARANCE_M = 0.95;
+    const OBSTACLE_BLOCK_RADIUS_M = 0.46;
+    let replanBusy = false;
+    let lastReplanTime = 0;
+    const REPLAN_COOLDOWN_MS = 900;
+
+    function applyNewPathFromPolyline(worldPts2D, howMsg) {
+      stopRobotAnim();
+      lastPathFlat = worldPts2D;
+      if (pathLine) {
+        scene.remove(pathLine);
+        pathLine.geometry.dispose();
+        pathLine.material.dispose();
+        pathLine = null;
+      }
+      const pts = worldPts2D.map(function (p) {
+        return new THREE.Vector3(p.x, FLOOR_Y + 0.12, p.z);
+      });
+      const curve = new THREE.CatmullRomCurve3(pts, false, "catmullrom", 0.2);
+      const tube = new THREE.TubeGeometry(curve, Math.max(8, pts.length * 3), 0.06, 8, false);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xd29922, emissive: 0x442200 });
+      pathLine = new THREE.Mesh(tube, mat);
+      scene.add(pathLine);
+      const samples = sampleCurvePoints(pts);
+      pathCurveSamples = samples;
+      robotGroup.visible = true;
+      wheelchairCameraSensor.resetAlertLatch();
+      startRobotAlongSamples(samples);
+      setStatus(howMsg || "New path.");
+    }
+
+    function tryReplanAroundDetectedObstacle(scan) {
+      if (replanBusy) return;
+      if (!moveState || !endPoint) return;
+      const near = scan.nearest;
+      const fwd = scan.forwardClearanceM;
+      if (near == null || fwd == null) return;
+      if (fwd >= REPLAN_MIN_CLEARANCE_M) return;
+      if (near.distance >= REPLAN_MIN_CLEARANCE_M) return;
+      if (performance.now() - lastReplanTime < REPLAN_COOLDOWN_MS) return;
+
+      replanBusy = true;
+      const snapDyn = Array.from(dynamicObstacleCells);
+      markDynamicObstacleDisk(near.point.x, near.point.z, OBSTACLE_BLOCK_RADIUS_M);
+
+      const sx = robotGroup.position.x;
+      const sz = robotGroup.position.z;
+      const gx = endPoint.x;
+      const gz = endPoint.z;
+      const si = worldToCell(sx, sz);
+      const gi = worldToCell(gx, gz);
+
+      const gridPath = astarGrid4(si.i, si.j, gi.i, gi.j, cellWalkableNav);
+      if (!gridPath || gridPath.length < 2) {
+        dynamicObstacleCells.clear();
+        snapDyn.forEach(function (k) {
+          dynamicObstacleCells.add(k);
+        });
+        replanBusy = false;
+        setStatus("Replan failed: no alternate grid path. Move destination or Clear.");
+        return;
+      }
+
+      const asPoly = gridPath.map(function (p) {
+        return { x: p.x, z: p.z };
+      });
+      asPoly[0] = { x: sx, z: sz };
+      const expanded = expandPathThroughGrid(asPoly, cellWalkableNav);
+      if (!expanded || expanded.length < 2) {
+        dynamicObstacleCells.clear();
+        snapDyn.forEach(function (k) {
+          dynamicObstacleCells.add(k);
+        });
+        replanBusy = false;
+        setStatus("Replan failed: path stitch.");
+        return;
+      }
+
+      lastReplanTime = performance.now();
+      applyNewPathFromPolyline(
+        expanded,
+        "Obstacle ahead — new route (" + expanded.length + " waypoints)."
+      );
+      replanBusy = false;
+    }
+
+    function buildPathFromSelections(moveWheelchair) {
+      clearPath();
+      const sr = parseInt(document.getElementById("sel-start").value, 10);
+      const er = parseInt(document.getElementById("sel-end").value, 10);
+      if (Number.isNaN(sr) || Number.isNaN(er)) {
+        setStatus("Select both rooms.");
+        return false;
+      }
+      if (sr === er) {
+        setStatus("Start and destination must be different rooms.");
+        return false;
+      }
+      startPoint = navPointInRoom(sr);
+      endPoint = navPointInRoom(er);
+      updateMarkers();
+      const sx = startPoint.x;
+      const sz = startPoint.z;
+      const gx = endPoint.x;
+      const gz = endPoint.z;
+      let path = null;
+      let how = "none";
+      const gRes = NAV.findPathDijkstra(sx, sz, gx, gz);
+      if (gRes && gRes.ok && gRes.points && gRes.points.length >= 2) {
+        path = gRes.points;
+        how = gRes.how || "dijkstra";
+      }
+      if (!path) {
+        const a = worldToCell(sx, sz);
+        const b2 = worldToCell(gx, gz);
+        const gr = astarGrid4(a.i, a.j, b2.i, b2.j);
+        if (gr && gr.length >= 2) {
+          path = expandPathThroughGrid(
+            gr.map(function (p) {
+              return { x: p.x, z: p.z };
+            })
+          );
+          how = "grid4";
+        }
+      }
+      if (!path || path.length < 2) {
+        setStatus("No path found between these rooms.");
+        return false;
+      }
+      lastPathFlat = path;
+      const pts = path.map((p) => new THREE.Vector3(p.x, FLOOR_Y + 0.12, p.z));
+      const curve = new THREE.CatmullRomCurve3(pts, false, "catmullrom", 0.2);
+      const tube = new THREE.TubeGeometry(curve, Math.max(8, pts.length * 3), 0.06, 8, false);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xd29922, emissive: 0x442200 });
+      pathLine = new THREE.Mesh(tube, mat);
+      scene.add(pathLine);
+      const samples = sampleCurvePoints(pts);
+      pathCurveSamples = samples;
+      if (moveWheelchair) {
+        startRobotAlongSamples(samples);
+        setStatus(
+          `Moving… (${how}, ${path.length} waypoints).`
+        );
+      } else {
+        robotGroup.visible = false;
+        stopRobotAnim();
+        setStatus(
+          `Path shown (${how}, ${path.length} waypoints). Press "Move wheelchair" to animate.`
+        );
+      }
+      return true;
+    }
+
+    document.getElementById("btn-show-path").addEventListener("click", function () {
+      buildPathFromSelections(false);
+    });
+    document.getElementById("btn-move").addEventListener("click", function () {
+      if (pathCurveSamples && pathCurveSamples.length >= 2) {
+        stopRobotAnim();
+        startRobotAlongSamples(pathCurveSamples);
+        setStatus("Wheelchair moving…");
+      } else {
+        buildPathFromSelections(true);
+      }
+    });
+    document.getElementById("btn-clear").addEventListener("click", function () {
+      startPoint = endPoint = null;
+      clearPath();
+      updateMarkers();
+      setStatus("Cleared.");
+    });
+
+    let wheelRT = null;
+    let lastVlaMs = 0;
+    const VLA_INTERVAL_MS = 450;
+    /** VLA+move lockstep: one /process_frame → advance exactly VLA_PATH_STEP_METERS along path. */
+    let vlaMoveInFlight = false;
+
+    function flipPixelsVertically(data, width, height) {
+      const row = width * 4;
+      const half = Math.floor(height / 2);
+      const tmp = new Uint8Array(row);
+      for (let y = 0; y < half; y++) {
+        const y2 = height - 1 - y;
+        const o0 = y * row;
+        const o1 = y2 * row;
+        tmp.set(data.subarray(o0, o0 + row));
+        data.copyWithin(o0, o1, o1 + row);
+        data.set(tmp, o1);
+      }
+    }
+
+    function ensureWheelRT(ww, hh) {
+      if (!wheelRT || wheelRT.width !== ww || wheelRT.height !== hh) {
+        if (wheelRT) wheelRT.dispose();
+        wheelRT = new THREE.WebGLRenderTarget(ww, hh, {
+          minFilter: THREE.LinearFilter,
+          magFilter: THREE.LinearFilter,
+          depthBuffer: true,
+        });
+      }
+      return wheelRT;
+    }
+
+    function captureWheelchairViewToJpegBlob() {
+      return new Promise(function (resolve, reject) {
+        try {
+          const w = window.innerWidth;
+          const h = window.innerHeight;
+          const mainW = Math.max(1, Math.floor(w * VIEW_SPLIT));
+          const wheelW = Math.max(1, w - mainW);
+          wheelCam.aspect = wheelW / h;
+          wheelCam.updateProjectionMatrix();
+          const rt = ensureWheelRT(wheelW, h);
+          const prevClear = renderer.autoClear;
+          renderer.autoClear = true;
+          renderer.setRenderTarget(rt);
+          renderer.clear();
+          renderer.render(scene, wheelCam);
+          renderer.setRenderTarget(null);
+          renderer.autoClear = prevClear;
+
+          const pixelBuffer = new Uint8Array(wheelW * h * 4);
+          renderer.readRenderTargetPixels(rt, 0, 0, wheelW, h, pixelBuffer);
+          flipPixelsVertically(pixelBuffer, wheelW, h);
+
+          const canvas2d = document.createElement("canvas");
+          canvas2d.width = wheelW;
+          canvas2d.height = h;
+          const ctx = canvas2d.getContext("2d");
+          const imgData = ctx.createImageData(wheelW, h);
+          imgData.data.set(pixelBuffer);
+          ctx.putImageData(imgData, 0, 0);
+          canvas2d.toBlob(
+            function (blob) {
+              if (blob) resolve(blob);
+              else reject(new Error("toBlob failed"));
+            },
+            "image/jpeg",
+            0.88
+          );
+        } catch (err) {
+          reject(err);
+        }
+      });
+    }
+
+    function sendFrameToVla(blob, onDone) {
+      if (!inpVlaUrl) {
+        return Promise.reject(new Error("VLA URL missing"));
+      }
+      const base = inpVlaUrl.value.replace(/\/$/, "");
+      const fd = new FormData();
+      fd.append("frame", blob, "wheel.jpg");
+      return fetch(base + "/process_frame", { method: "POST", body: fd })
+        .then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.blob();
+        })
+        .then(function (b) {
+          if (vlaLiveImg) {
+            if (vlaLiveImg._url) URL.revokeObjectURL(vlaLiveImg._url);
+            vlaLiveImg._url = URL.createObjectURL(b);
+            vlaLiveImg.src = vlaLiveImg._url;
+          }
+          if (vlaLiveStatus)
+            vlaLiveStatus.textContent =
+              "VLA overlay ok · " + new Date().toLocaleTimeString();
+          if (typeof onDone === "function") onDone();
+        })
+        .catch(function (e) {
+          if (vlaLiveStatus)
+            vlaLiveStatus.textContent =
+              "VLA error: " + (e && e.message ? e.message : String(e));
+          throw e;
+        });
+    }
+
+    if (chkVlaLive && vlaLiveLayer) {
+      chkVlaLive.addEventListener("change", function () {
+        if (chkVlaLive.checked) {
+          vlaLiveLayer.classList.add("active");
+          vlaLiveLayer.setAttribute("aria-hidden", "false");
+        } else {
+          vlaLiveLayer.classList.remove("active");
+          vlaLiveLayer.setAttribute("aria-hidden", "true");
+          vlaMoveInFlight = false;
+        }
+      });
+    }
+
+    function tick() {
+      requestAnimationFrame(tick);
+      const dt = clock.getDelta();
+      if (moveState && moveState.samples) {
+        const { samples, lenInfo, speed } = moveState;
+        const vlaSync =
+          chkVlaLive &&
+          chkVlaLive.checked &&
+          vlaLiveLayer &&
+          vlaLiveLayer.classList.contains("active");
+        if (vlaSync) {
+          if (!vlaMoveInFlight) {
+            vlaMoveInFlight = true;
+            captureWheelchairViewToJpegBlob()
+              .then(function (blob) {
+                return sendFrameToVla(blob);
+              })
+              .then(function () {
+                vlaMoveInFlight = false;
+                if (!moveState || !moveState.samples) return;
+                const step = VLA_PATH_STEP_METERS;
+                moveState.dist = Math.min(moveState.dist + step, lenInfo.total);
+                if (moveState.dist >= lenInfo.total) {
+                  placeRobotOnPath(samples, lenInfo.total);
+                  moveState = null;
+                  setStatus("Wheelchair arrived (VLA stepped).");
+                } else {
+                  placeRobotOnPath(samples, moveState.dist);
+                  const pct = ((moveState.dist / lenInfo.total) * 100).toFixed(0);
+                  setStatus("VLA frame-by-frame · " + pct + "% along path");
+                }
+              })
+              .catch(function () {
+                vlaMoveInFlight = false;
+                stopRobotAnim();
+                setStatus("VLA gate failed — movement stopped.");
+              });
+          }
+        } else {
+          moveState.dist += speed * dt;
+          if (moveState.dist >= lenInfo.total) {
+            placeRobotOnPath(samples, lenInfo.total);
+            moveState = null;
+            setStatus("Wheelchair arrived.");
+          } else {
+            placeRobotOnPath(samples, moveState.dist);
+          }
+        }
+      }
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      const mainW = Math.max(1, Math.floor(w * VIEW_SPLIT));
+      const wheelW = Math.max(1, w - mainW);
+
+      wheelCam.aspect = wheelW / h;
+      wheelCam.updateProjectionMatrix();
+      if (robotGroup.visible) {
+        robotGroup.updateMatrixWorld(true);
+        wheelchairCameraSensor.scan();
+        if (
+          moveState &&
+          moveState.samples &&
+          !replanBusy &&
+          endPoint &&
+          wheelchairCameraSensor.lastScan
+        ) {
+          tryReplanAroundDetectedObstacle(wheelchairCameraSensor.lastScan);
+        }
+      }
+
+      renderer.setScissorTest(true);
+      renderer.clear();
+
+      // Main house orbit view (left)
+      camera.aspect = mainW / h;
+      camera.updateProjectionMatrix();
+      renderer.setViewport(0, 0, mainW, h);
+      renderer.setScissor(0, 0, mainW, h);
+      renderer.render(scene, camera);
+
+      // Wheelchair camera feed (right)
+      renderer.setViewport(mainW, 0, wheelW, h);
+      renderer.setScissor(mainW, 0, wheelW, h);
+      renderer.render(scene, wheelCam);
+
+      renderer.setScissorTest(false);
+      if (camMetaEl) {
+        camMetaEl.textContent =
+          "FOV " + Math.round(wheelCam.fov) + " | " + wheelW + "x" + h + " | RGB-D";
+      }
+      if (clearanceEl) {
+        if (robotGroup.visible) {
+          clearanceEl.classList.remove("muted");
+          clearanceEl.textContent =
+            "Obstacle distance (seat height): " + formatWheelchairClearances();
+        } else {
+          clearanceEl.classList.add("muted");
+          clearanceEl.textContent =
+            "Obstacle distance: — (show path / move wheelchair to measure)";
+        }
+      }
+      if (sensorHudEl) {
+        if (robotGroup.visible && wheelchairCameraSensor.lastScan) {
+          const s = wheelchairCameraSensor.lastScan;
+          sensorHudEl.classList.remove("muted");
+          const n = s.nearest;
+          const fwd = s.forwardClearanceM;
+          const nTxt = n
+            ? n.distance.toFixed(2) + "m (" + s.detections.length + " objs)"
+            : "—";
+          const fwdTxt = fwd != null ? fwd.toFixed(2) + "m" : "—";
+          sensorHudEl.textContent =
+            "Camera sensor: ahead sector min " +
+            fwdTxt +
+            " · nearest root " +
+            nTxt +
+            " · alert under " +
+            wheelchairCameraSensor.config.minAlertDistanceM.toFixed(2) +
+            "m";
+        } else {
+          sensorHudEl.classList.add("muted");
+          sensorHudEl.textContent =
+            "Camera sensor: — (enable wheelchair to scan; API: ROBOT_HOUSE.wheelchairCameraSensor)";
+        }
+      }
+      if (
+        chkVlaLive &&
+        chkVlaLive.checked &&
+        vlaLiveLayer &&
+        vlaLiveLayer.classList.contains("active")
+      ) {
+        const movingWithVlaGate =
+          moveState && moveState.samples;
+        if (!movingWithVlaGate) {
+          const nowMs = performance.now();
+          if (nowMs - lastVlaMs >= VLA_INTERVAL_MS) {
+            lastVlaMs = nowMs;
+            captureWheelchairViewToJpegBlob()
+              .then(function (b) {
+                return sendFrameToVla(b);
+              })
+              .catch(function (e) {
+                if (vlaLiveStatus)
+                  vlaLiveStatus.textContent =
+                    "VLA capture: " + (e && e.message ? e.message : String(e));
+              });
+          }
+        }
+      }
+    }
+    tick();
+
+    window.addEventListener("resize", () => {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    setStatus("Choose start and destination rooms, then Show path or Move wheelchair.");
+
+    ROBOT_HOUSE.vlaLiveBridge = {
+      captureOnce: function () {
+        return captureWheelchairViewToJpegBlob().then(function (b) {
+          return sendFrameToVla(b);
+        });
+      },
+      setEnabled: function (on) {
+        if (chkVlaLive) chkVlaLive.checked = !!on;
+        if (vlaLiveLayer) {
+          vlaLiveLayer.classList.toggle("active", !!on);
+          vlaLiveLayer.setAttribute("aria-hidden", on ? "false" : "true");
+        }
+      },
+    };
+
+    ROBOT_HOUSE.dynamicReplan = {
+      tryFromLastScan: tryReplanAroundDetectedObstacle,
+      clearBlockedCells: function () {
+        dynamicObstacleCells.clear();
+      },
+      params: {
+        minClearanceM: REPLAN_MIN_CLEARANCE_M,
+        blockRadiusM: OBSTACLE_BLOCK_RADIUS_M,
+        cooldownMs: REPLAN_COOLDOWN_MS,
+      },
+    };
+    })();
+  </script>
+</body>
+</html>

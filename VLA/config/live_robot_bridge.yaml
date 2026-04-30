@@ -1,0 +1,33 @@
+# HTTP live bridge: Robot wheelchair camera JPEG -> Grounding DINO + SAM -> overlay JPEG.
+# Run from VLA repo root: python scripts/live_frame_server.py --config config/live_robot_bridge.yaml
+system:
+  device: cuda
+  strict_real_models: false
+detection:
+  model_name: models/grounding_dino_tiny
+  use_real_model: true
+  device: cuda
+  stabilization_enabled: false
+  box_threshold: 0.32
+  text_threshold: 0.2
+  prompt: wall . floor . ceiling . window . curtain . blind . carpet . rug . sofa
+    . couch . armchair . chair . table . coffee table . dining table . desk . tv .
+    monitor . laptop . bookshelf . shelf . cabinet . wardrobe . drawer . bed . pillow
+    . blanket . nightstand . lamp . chandelier . mirror . painting . plant . door
+    . handle . fridge . oven . microwave . sink . faucet . toilet . shower . bathtub
+    . washing machine . dishwasher . stove . trash bin . clock . fan . air conditioner
+segmentation:
+  model_type: vit_h
+  checkpoint: models/sam/sam_vit_h_4b8939.pth
+  use_real_model: true
+  device: cuda
+visualization:
+  draw_masks: true
+  draw_boxes: true
+  show_semantic_label: false
+  overlay_box_thickness: 2
+  overlay_label_thickness: 1
+live_bridge:
+  # Smaller side = faster GPU path (override with env VLA_MAX_INFER_SIDE).
+  max_infer_side: 512
+  jpeg_quality: 85

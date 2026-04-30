@@ -1,0 +1,38 @@
+# 
+# Wavefront material file
+# Converted by the DEEP Exploration  Deep Exploration 6.3 x64 6.3.3.8069
+# Right Hemisphere, LTD
+# http://www.righthemisphere.com/
+# 
+
+newmtl Wood
+Ka 0.647059 0.580392 0.529412
+Kd 0.858824 0.756863 0.592157
+Ks 1 1 1
+illum 2
+Ns 137.187
+map_Kd wdpo45ty.png
+map_bump 
+bump 
+map_opacity 
+map_d 
+refl 
+map_kS 
+map_kA 
+map_Ns 
+
+newmtl Steel
+Ka 1 1 1
+Kd 0.647059 0.580392 0.529412
+Ks 1 1 1
+illum 2
+Ns 445.722
+map_Kd 
+map_bump 
+bump 
+map_opacity 
+map_d 
+refl 
+map_kS 
+map_kA 
+map_Ns 

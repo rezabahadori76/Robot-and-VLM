@@ -1,0 +1,107 @@
+# -----------------------------------------------------------------------------
+# Wheelchair / Three.js demo — keep repo lean; see README for run instructions
+# -----------------------------------------------------------------------------
+
+# --- Operating system ---
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Editors & IDEs ---
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.code-workspace
+
+# Optional: uncomment to ignore all VS Code user settings (keep if you share tasks)
+# .vscode/
+
+# --- Secrets & local env ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Node.js (if you add a bundler or tooling later) ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+package-lock.json.bak
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+
+# --- Python (local scripts / notebooks under this folder) ---
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+ENV/
+.envrc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+*.egg-info/
+.eggs/
+
+# --- Build & caches ---
+dist/
+build/
+out/
+.cache/
+.parcel-cache/
+.turbo/
+*.tsbuildinfo
+.eslintcache
+.stylelintcache
+
+# --- Logs & temp ---
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.old
+
+# --- Test / coverage ---
+coverage/
+.nyc_output/
+*.lcov
+
+# --- Local vendor drops next to index (models already live under assets/) ---
+/*.rar
+/*.zip
+/*.7z
+
+# --- Unused loader duplicates (index.html uses MTLLoader.js / OBJLoader.js) ---
+MTLLoader.new.js
+OBJLoader.new.js
+
+# --- Blender / DCC backups ---
+*.blend1
+*.blend2
+
+# --- OS metadata on assets (if any) ---
+**/.DS_Store

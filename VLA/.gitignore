@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Logs / temp
+*.log
+*.tmp
+*.swp
+
+# Heavy project assets
+models/
+data/
+outputs/
+tmp/
+
+# Local build/runtime artifacts (keep rtabmap sources; ignore build trees only)
+third_party/rtabmap/build/
+third_party/rtabmap/install/
+
+# Large media: rely on `data/`, `outputs/`, and root monorepo `.gitignore` for weights/videos.
+
+# Model/map artifacts
+*.pth
+*.pt
+*.onnx
+*.bin
+*.safetensors
+*.ckpt
+*.h5
+*.npy
+*.npz
+*.faiss
+*.db
+*.ply
+*.pcd
