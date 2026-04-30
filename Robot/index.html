@@ -609,6 +609,7 @@
     const FLOOR_LIKE_MAX_HEIGHT_M = 0.1;
     const FLOOR_LIKE_MAX_TOP_Y_M = FLOOR_Y + 0.12;
     const floorLikeMeshCache = new Map();
+    const passThroughGroundMeshCache = new Map();
     // Filled later after robot mesh construction; keep nullable to avoid TDZ during early nav init.
     let robotGroup = null;
     const nx = Math.ceil((OUTER_BOUNDS.x1 - OUTER_BOUNDS.x0) / CELL) + 1;
@@ -633,6 +634,7 @@
       if (mesh.userData && mesh.userData.noNavCollision) return true;
       // Structural geometry is already handled by wall/footprint collision checks.
       if (mesh.userData && mesh.userData.noObjectKeepout) return true;
+      if (isPassThroughGroundMesh(mesh)) return true;
       if (isFloorLikeTraversableMesh(mesh)) return true;
       return meshExcludedFromSensor(mesh);
     }
@@ -1451,7 +1453,7 @@
     const scene = new THREE.Scene();
     scene.fog = new THREE.Fog(0x0b1118, 24, 64);
     const clock = new THREE.Clock();
-    const APP_BUILD_ID = "2026-04-30-map-replan-v10-python-map-planner";
+    const APP_BUILD_ID = "2026-04-30-map-replan-v11-overlay-no-lines-door-white";
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
     const VIEW_SPLIT = 0.56; // left: main view, right: wheelchair camera (wider right pane)
     /** One VLA inference ↔ one discrete step along the yellow path (meters of arc length). */
@@ -1863,24 +1865,36 @@
 
       // Realistic-ish materials
       const frameMat = new THREE.MeshStandardMaterial({
-        color: 0xf2f3f5,
-        roughness: 0.55,
-        metalness: 0.12,
-      });
-      const trimMat = new THREE.MeshStandardMaterial({
-        color: 0xf8f9fb,
-        roughness: 0.62,
+        color: 0x6f4a2d,
+        roughness: 0.6,
         metalness: 0.08,
       });
-      const leafMat = new THREE.MeshStandardMaterial({
-        color: 0x7a4d2c,
-        roughness: 0.62,
+      const trimMat = new THREE.MeshStandardMaterial({
+        color: 0x8a5a37,
+        roughness: 0.64,
         metalness: 0.06,
       });
+      const leafMat = new THREE.MeshStandardMaterial({
+        color: 0xf3f4f6,
+        roughness: 0.58,
+        metalness: 0.05,
+      });
       const panelMat = new THREE.MeshStandardMaterial({
-        color: 0x2e1d12,
-        roughness: 0.7,
+        color: 0xe5e7eb,
+        roughness: 0.62,
         metalness: 0.03,
+      });
+      const glassMat = new THREE.MeshStandardMaterial({
+        color: 0x6f8fb0,
+        roughness: 0.18,
+        metalness: 0.2,
+        transparent: true,
+        opacity: 0.72,
+      });
+      const kickPlateMat = new THREE.MeshStandardMaterial({
+        color: 0xb6bec8,
+        roughness: 0.28,
+        metalness: 0.78,
       });
       const metalMat = new THREE.MeshStandardMaterial({
         color: 0xd8e2ee,
@@ -1898,7 +1912,7 @@
       const leafT = 0.04;
       const leafH = 2.02;
       const handleY = FLOOR_Y + 1.02;
-      const openAngle = 0.62; // ~35deg open
+      const openAngle = 0.88; // ~50deg open, easier to visually identify as door
 
       function addBox(parent, w, h, d, mat, x, y, z) {
         const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -1929,6 +1943,42 @@
         g.add(lever);
         parent.add(g);
         return g;
+      }
+
+      function makeDoorSignMaterial() {
+        const c = document.createElement("canvas");
+        c.width = 256;
+        c.height = 96;
+        const ctx = c.getContext("2d");
+        ctx.fillStyle = "#111827";
+        ctx.fillRect(0, 0, c.width, c.height);
+        ctx.strokeStyle = "#fbbf24";
+        ctx.lineWidth = 8;
+        ctx.strokeRect(6, 6, c.width - 12, c.height - 12);
+        ctx.fillStyle = "#f9fafb";
+        ctx.font = "bold 46px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("DOOR", c.width * 0.5, c.height * 0.52);
+        const tex = new THREE.CanvasTexture(c);
+        tex.needsUpdate = true;
+        return new THREE.MeshStandardMaterial({
+          map: tex,
+          roughness: 0.45,
+          metalness: 0.05,
+          emissive: 0x17120a,
+          emissiveIntensity: 0.25,
+          side: THREE.DoubleSide,
+        });
+      }
+
+      const doorSignMat = makeDoorSignMaterial();
+
+      function addDoorSigns(parent, x, y, z, rotY) {
+        const sign = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.11), doorSignMat);
+        sign.position.set(x, y, z);
+        sign.rotation.y = rotY || 0;
+        parent.add(sign);
       }
 
       function addHinges(parent, x, ymid, z, axisIsZ) {
@@ -1983,9 +2033,18 @@
         pivot.add(leaf);
 
         addBox(leaf, leafT, leafH, leafW, leafMat, 0, 0, 0);
-        // Simple inset panels
-        addBox(leaf, 0.012, leafH * 0.58, leafW * 0.62, panelMat, spec.flip * (leafT * 0.5 + 0.006), 0.0, 0);
-        addBox(leaf, 0.012, leafH * 0.22, leafW * 0.62, panelMat, spec.flip * (leafT * 0.5 + 0.006), leafH * 0.25, 0);
+        // Simple inset panels (both faces)
+        const faceXV = spec.flip * (leafT * 0.5 + 0.006);
+        addBox(leaf, 0.012, leafH * 0.58, leafW * 0.62, panelMat, faceXV, 0.0, 0);
+        addBox(leaf, 0.012, leafH * 0.58, leafW * 0.62, panelMat, -faceXV, 0.0, 0);
+        addBox(leaf, 0.012, leafH * 0.22, leafW * 0.62, panelMat, faceXV, leafH * 0.25, 0);
+        addBox(leaf, 0.012, leafH * 0.22, leafW * 0.62, panelMat, -faceXV, leafH * 0.25, 0);
+        // Distinctive door cues (both faces): vision pane + kick plate.
+        const detailXV = spec.flip * (leafT * 0.5 + 0.008);
+        addBox(leaf, 0.01, leafH * 0.24, leafW * 0.38, glassMat, detailXV, leafH * 0.2, 0);
+        addBox(leaf, 0.01, leafH * 0.24, leafW * 0.38, glassMat, -detailXV, leafH * 0.2, 0);
+        addBox(leaf, 0.01, leafH * 0.12, leafW * 0.58, kickPlateMat, detailXV, -leafH * 0.33, 0);
+        addBox(leaf, 0.01, leafH * 0.12, leafW * 0.58, kickPlateMat, -detailXV, -leafH * 0.33, 0);
 
         // Hinges (on pivot edge)
         addHinges(pivot, 0, ymid, 0.01, true);
@@ -1996,6 +2055,10 @@
         addLeverHandle(leaf, 0, handleY - ymid, latchZ, Math.PI);
 
         pivot.rotation.y = spec.flip * openAngle;
+        // Explicit sign on both faces to make "door" unmistakable.
+        const signY = FLOOR_Y + leafH + headerH + 0.22;
+        addDoorSigns(g, frameDepth * 0.5 + 0.02, signY, 0, Math.PI / 2);
+        addDoorSigns(g, -frameDepth * 0.5 - 0.02, signY, 0, -Math.PI / 2);
         markStructural(g);
         scene.add(g);
       }
@@ -2034,8 +2097,17 @@
         pivot.add(leaf);
 
         addBox(leaf, leafW, leafH, leafT, leafMat, 0, 0, 0);
-        addBox(leaf, leafW * 0.62, leafH * 0.58, 0.012, panelMat, 0, 0.0, spec.flip * (leafT * 0.5 + 0.006));
-        addBox(leaf, leafW * 0.62, leafH * 0.22, 0.012, panelMat, 0, leafH * 0.25, spec.flip * (leafT * 0.5 + 0.006));
+        const faceZH = spec.flip * (leafT * 0.5 + 0.006);
+        addBox(leaf, leafW * 0.62, leafH * 0.58, 0.012, panelMat, 0, 0.0, faceZH);
+        addBox(leaf, leafW * 0.62, leafH * 0.58, 0.012, panelMat, 0, 0.0, -faceZH);
+        addBox(leaf, leafW * 0.62, leafH * 0.22, 0.012, panelMat, 0, leafH * 0.25, faceZH);
+        addBox(leaf, leafW * 0.62, leafH * 0.22, 0.012, panelMat, 0, leafH * 0.25, -faceZH);
+        // Distinctive door cues (both faces): vision pane + kick plate.
+        const detailZH = spec.flip * (leafT * 0.5 + 0.008);
+        addBox(leaf, leafW * 0.38, leafH * 0.24, 0.01, glassMat, 0, leafH * 0.2, detailZH);
+        addBox(leaf, leafW * 0.38, leafH * 0.24, 0.01, glassMat, 0, leafH * 0.2, -detailZH);
+        addBox(leaf, leafW * 0.58, leafH * 0.12, 0.01, kickPlateMat, 0, -leafH * 0.33, detailZH);
+        addBox(leaf, leafW * 0.58, leafH * 0.12, 0.01, kickPlateMat, 0, -leafH * 0.33, -detailZH);
 
         addHinges(pivot, 0.01, ymid, 0, false);
 
@@ -2044,6 +2116,10 @@
         addLeverHandle(leaf, latchX, handleY - ymid, 0, -Math.PI / 2);
 
         pivot.rotation.y = -spec.flip * openAngle;
+        // Explicit sign on both faces to make "door" unmistakable.
+        const signY = FLOOR_Y + leafH + headerH + 0.22;
+        addDoorSigns(g, 0, signY, frameDepth * 0.5 + 0.02, 0);
+        addDoorSigns(g, 0, signY, -frameDepth * 0.5 - 0.02, Math.PI);
         markStructural(g);
         scene.add(g);
       }
@@ -2918,12 +2994,48 @@
     scene.add(robotGroup);
     robotGroup.add(wheelCam);
     // Wheelchair headlight: improves local visibility for wheelchair camera in low-light areas.
-    const wheelHeadLight = new THREE.SpotLight(0xffffff, 1.7, 16, Math.PI / 5.3, 0.4, 1.5);
+    const wheelHeadLight = new THREE.SpotLight(0xffffff, 2.35, 18, Math.PI / 5.1, 0.38, 1.35);
     wheelHeadLight.position.set(0, 1.0, 0.2);
     wheelHeadLight.target.position.set(0, 0.85, -2.2);
     wheelHeadLight.castShadow = false;
     robotGroup.add(wheelHeadLight);
     robotGroup.add(wheelHeadLight.target);
+
+    function meshOrParentsNameContains(mesh, words) {
+      let o = mesh;
+      while (o) {
+        const n = (o.name || "").toLowerCase();
+        for (let i = 0; i < words.length; i++) {
+          if (n.indexOf(words[i]) >= 0) return true;
+        }
+        o = o.parent;
+      }
+      return false;
+    }
+
+    function isPassThroughGroundMesh(mesh) {
+      if (!mesh || !mesh.isMesh) return false;
+      if (mesh.userData && mesh.userData.passThroughGround) return true;
+      const key = mesh.uuid || mesh.id;
+      if (passThroughGroundMeshCache.has(key)) return passThroughGroundMeshCache.get(key);
+      let ok = false;
+      try {
+        const box = new THREE.Box3().setFromObject(mesh);
+        if (box.isEmpty() === false) {
+          const h = box.max.y - box.min.y;
+          // Floor-adjacent thin meshes (e.g., rugs/carpets/mats) are traversable.
+          const nearFloor = box.min.y <= FLOOR_Y + 0.06;
+          const thin = h <= 0.16;
+          const namedGroundDecor = meshOrParentsNameContains(mesh, [
+            "rug", "carpet", "mat", "runner", "rofarshi", "floor_mat",
+          ]);
+          ok = nearFloor && (namedGroundDecor || thin);
+        }
+      } catch (_) {}
+      passThroughGroundMeshCache.set(key, ok);
+      return ok;
+    }
+
     function isFloorLikeTraversableMesh(mesh) {
       if (!mesh || !mesh.isMesh) return false;
       if (mesh.userData && mesh.userData.traversableSurface) return true;
@@ -2948,6 +3060,11 @@
         if (o === robotGroup) return true;
         o = o.parent;
       }
+      // Door model parts are structural traversable elements in this map.
+      if (mesh.userData && mesh.userData.noObjectKeepout) return true;
+      if (meshOrParentsNameContains(mesh, ["door", "jamb", "hinge", "handle"])) return true;
+      // Ground cover objects such as carpet/rug/mat must not block wheelchair movement.
+      if (isPassThroughGroundMesh(mesh)) return true;
       if (isFloorLikeTraversableMesh(mesh)) return true;
       if (pathLine && mesh === pathLine) return true;
       if (startMesh && mesh === startMesh) return true;
@@ -3290,16 +3407,24 @@
 
     /** Dynamic replan: stop/replan when obstacle is within 1 meter. */
     const REPLAN_MIN_CLEARANCE_M = 1.0;
+    // Wheelchair should stop earlier than minimum collision clearance so it has maneuver room.
+    const MANEUVER_STOP_CLEARANCE_M = Math.max(
+      REPLAN_MIN_CLEARANCE_M + 0.45,
+      WHEELCHAIR_BODY_WIDTH_M * 3
+    );
     const OBSTACLE_BLOCK_RADIUS_M = 0.46;
     const CANDIDATE_RISK_WEIGHT = 3.5;
     let replanBusy = false;
     let lastReplanTime = 0;
     const REPLAN_COOLDOWN_MS = 900;
+    const REPLAN_BUSY_MAX_MS = 7000;
     let pendingForcedReplanScan = null;
     let pendingForcedReplanQueued = false;
+    let replanStartedAtMs = 0;
 
     function _finishReplan() {
       replanBusy = false;
+      replanStartedAtMs = 0;
       if (!pendingForcedReplanQueued || !pendingForcedReplanScan) return;
       const queued = pendingForcedReplanScan;
       pendingForcedReplanScan = null;
@@ -3345,14 +3470,27 @@
       const nextDist = Math.min(moveState.dist + Math.max(0.01, stepMeters), moveState.lenInfo.total);
       const curr = { x: robotGroup.position.x, z: robotGroup.position.z };
       const next = pathPointAtDistance(moveState.samples, moveState.lenInfo, nextDist);
+      const nearDist =
+        near && typeof near.distance === "number" && Number.isFinite(near.distance)
+          ? near.distance
+          : Infinity;
+      const fwd = scan.forwardClearanceM;
+      // If sensors say we're far from obstacles, avoid hard-stop on conservative geometric
+      // predictor alone (prevents deadlock loops at dist=0 while replanning is busy).
+      const noUrgentObstacleBySensor =
+        nearDist > MANEUVER_STOP_CLEARANCE_M + 0.35 &&
+        (fwd == null || fwd > MANEUVER_STOP_CLEARANCE_M + 0.25);
       if (!segmentWalkableRobust(curr.x, curr.z, next.x, next.z)) {
-        return "Predicted corner/body collision on next step";
+        if (!noUrgentObstacleBySensor) {
+          return "Predicted corner/body collision on next step";
+        }
       }
       if (!passageAllowedForWheelchairAt(next.x, next.z, cellWalkableNav)) {
-        return "Next segment too tight for wheelchair";
+        if (!noUrgentObstacleBySensor) {
+          return "Next segment too tight for wheelchair";
+        }
       }
-      const fwd = scan.forwardClearanceM;
-      if (fwd != null && fwd <= REPLAN_MIN_CLEARANCE_M) {
+      if (fwd != null && fwd <= MANEUVER_STOP_CLEARANCE_M) {
         // Inside a doorway, ray-based forward clearance can collapse to near-zero on frames/door jambs.
         // Avoid deadlock: if geometric path checks above are safe, allow passing through the door zone.
         if (nearInDoorZone) {
@@ -3365,13 +3503,55 @@
         const safeGap = WHEELCHAIR_BODY_WIDTH_M + WHEELCHAIR_SIDE_SAFETY_M;
         if (gap == null || gap < safeGap) {
           return (
-            "Obstacle within 1m " +
-            `(fwd=${fmtNum(fwd)}m <= ${fmtNum(REPLAN_MIN_CLEARANCE_M)}m, ` +
+            "Obstacle within maneuver stop clearance " +
+            `(fwd=${fmtNum(fwd)}m <= ${fmtNum(MANEUVER_STOP_CLEARANCE_M)}m, ` +
             `gap=${fmtNum(gap)}m, safeGap=${fmtNum(safeGap)}m)`
           );
         }
       }
       return null;
+    }
+
+    function hasUrgentObstacleNow(scan) {
+      if (!scan) return false;
+      const near = scan.nearest;
+      const nearDist =
+        near && typeof near.distance === "number" && Number.isFinite(near.distance)
+          ? near.distance
+          : Infinity;
+      const fwd = scan.forwardClearanceM;
+      const gap = scan.forwardPassageWidthM;
+      const safeGap = WHEELCHAIR_BODY_WIDTH_M + WHEELCHAIR_SIDE_SAFETY_M;
+      if (nearDist <= MANEUVER_STOP_CLEARANCE_M) return true;
+      if (fwd != null && fwd <= MANEUVER_STOP_CLEARANCE_M && gap != null && gap < safeGap) {
+        return true;
+      }
+      return false;
+    }
+
+    function blockerSnapshot(scan) {
+      const near = scan && scan.nearest ? scan.nearest : null;
+      const rootName =
+        near && near.root && near.root.name ? String(near.root.name) : null;
+      const meshName =
+        near && near.mesh && near.mesh.name ? String(near.mesh.name) : null;
+      return {
+        nearestDistanceM:
+          near && Number.isFinite(near.distance)
+            ? +near.distance.toFixed(3)
+            : null,
+        forwardClearanceM:
+          scan && Number.isFinite(scan.forwardClearanceM)
+            ? +scan.forwardClearanceM.toFixed(3)
+            : null,
+        forwardGapM:
+          scan && Number.isFinite(scan.forwardPassageWidthM)
+            ? +scan.forwardPassageWidthM.toFixed(3)
+            : null,
+        rootId: near && near.rootId ? near.rootId : null,
+        rootName: rootName,
+        meshName: meshName,
+      };
     }
 
     function applyNewPathFromPolyline(worldPts2D, howMsg) {
@@ -3888,6 +4068,7 @@
       );
 
       replanBusy = true;
+      replanStartedAtMs = performance.now();
       const snapDyn = Array.from(dynamicObstacleCells);
       const detMarked = markDynamicObstaclesFromSensorDetections(scan);
       markDynamicObstacleDisk(near.point.x, near.point.z, OBSTACLE_BLOCK_RADIUS_M);
@@ -4023,6 +4204,11 @@
     let wheelRT = null;
     let lastVlaMs = 0;
     const VLA_INTERVAL_MS = 450;
+    const VLA_GATE_TIMEOUT_MS = 1800;
+    // Brightness boost for wheelchair camera frames sent to VLA.
+    // Helps DINO/SAM in darker indoor shots.
+    const WHEEL_FRAME_BRIGHTNESS_GAIN = 1.28;
+    const WHEEL_FRAME_BRIGHTNESS_BIAS = 10;
     /** VLA+move lockstep: one /process_frame → advance exactly VLA_PATH_STEP_METERS along path. */
     let vlaMoveInFlight = false;
 
@@ -4037,6 +4223,16 @@
         tmp.set(data.subarray(o0, o0 + row));
         data.copyWithin(o0, o1, o1 + row);
         data.set(tmp, o1);
+      }
+    }
+
+    function brightenRgbaInPlace(data, gain, bias) {
+      const g = Number.isFinite(gain) ? gain : 1.0;
+      const b = Number.isFinite(bias) ? bias : 0.0;
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = Math.min(255, Math.max(0, Math.round(data[i] * g + b)));
+        data[i + 1] = Math.min(255, Math.max(0, Math.round(data[i + 1] * g + b)));
+        data[i + 2] = Math.min(255, Math.max(0, Math.round(data[i + 2] * g + b)));
       }
     }
 
@@ -4082,6 +4278,11 @@
             const pixelBuffer = new Uint8Array(wheelW * h * 4);
             renderer.readRenderTargetPixels(rt, 0, 0, wheelW, h, pixelBuffer);
             flipPixelsVertically(pixelBuffer, wheelW, h);
+            brightenRgbaInPlace(
+              pixelBuffer,
+              WHEEL_FRAME_BRIGHTNESS_GAIN,
+              WHEEL_FRAME_BRIGHTNESS_BIAS
+            );
 
             const canvas2d = document.createElement("canvas");
             canvas2d.width = wheelW;
@@ -4262,6 +4463,97 @@
       });
     }
 
+    function advanceWheelchairStepWithSafety(step, samples, lenInfo, modeTag) {
+      if (!moveState || !moveState.samples) return false;
+      const riskReason = shouldStopAndReplanNow(
+        wheelchairCameraSensor.lastScan,
+        step
+      );
+      if (riskReason) {
+        if (replanBusy) {
+          if (!hasUrgentObstacleNow(wheelchairCameraSensor.lastScan)) {
+            logFrameEvent("decision", {
+              action: "advance-while-replanning",
+              reason: riskReason,
+            });
+            moveState.dist = Math.min(moveState.dist + step, lenInfo.total);
+            if (moveState.dist >= lenInfo.total) {
+              placeRobotOnPath(samples, lenInfo.total);
+              moveState = null;
+              setStatus("Wheelchair arrived.");
+            } else {
+              placeRobotOnPath(samples, moveState.dist);
+            }
+            return true;
+          }
+          const b = blockerSnapshot(wheelchairCameraSensor.lastScan);
+          logFrameEvent("decision", {
+            action: "hold-while-replanning",
+            reason: riskReason,
+            blocker: b,
+          });
+          const who =
+            b.rootName || b.meshName || (b.rootId ? ("id=" + b.rootId.slice(0, 8)) : "unknown");
+          setStatus(
+            "Replanning route… blocker=" + who + " near=" + fmtNum(b.nearestDistanceM) + "m"
+          );
+          return false;
+        }
+        const s = wheelchairCameraSensor.lastScan;
+        const b = blockerSnapshot(s);
+        logFrameEvent("decision", {
+          action: "stop-and-replan",
+          reason: riskReason,
+          fwd: s ? +((s.forwardClearanceM ?? NaN)).toFixed(3) : null,
+          gap: s ? +((s.forwardPassageWidthM ?? NaN)).toFixed(3) : null,
+          nearest: s && s.nearest ? +(s.nearest.distance).toFixed(3) : null,
+          blocker: b,
+        });
+        const who =
+          b.rootName || b.meshName || (b.rootId ? ("id=" + b.rootId.slice(0, 8)) : "unknown");
+        setStatus(
+          "Stop + replan: " +
+            riskReason +
+            " | blocker=" +
+            who +
+            " near=" +
+            fmtNum(b.nearestDistanceM) +
+            "m"
+        );
+        if (wheelchairCameraSensor.lastScan) {
+          logFrameEvent("replan-blocker", b);
+          tryReplanAroundDetectedObstacle(wheelchairCameraSensor.lastScan, {
+            force: true,
+          });
+        }
+        return false;
+      }
+
+      logFrameEvent("decision", {
+        action: "advance",
+        mode: modeTag || "unknown",
+        step: +step.toFixed(3),
+        prevDist: +moveState.dist.toFixed(3),
+      });
+      moveState.dist = Math.min(moveState.dist + step, lenInfo.total);
+      if (moveState.dist >= lenInfo.total) {
+        placeRobotOnPath(samples, lenInfo.total);
+        moveState = null;
+        setStatus(
+          modeTag === "vla"
+            ? "Wheelchair arrived (VLA assisted)."
+            : "Wheelchair arrived."
+        );
+      } else {
+        placeRobotOnPath(samples, moveState.dist);
+        if (modeTag === "vla") {
+          const pct = ((moveState.dist / lenInfo.total) * 100).toFixed(0);
+          setStatus("VLA assisted movement · " + pct + "% along path");
+        }
+      }
+      return true;
+    }
+
     function tick() {
       requestAnimationFrame(tick);
       frameTickCount += 1;
@@ -4290,6 +4582,19 @@
         }
       }
       if (moveState && moveState.samples) {
+        if (
+          replanBusy &&
+          replanStartedAtMs > 0 &&
+          performance.now() - replanStartedAtMs > REPLAN_BUSY_MAX_MS &&
+          !pendingForcedReplanQueued
+        ) {
+          logFrameEvent("replan-watchdog", {
+            action: "release-busy-lock",
+            busyForMs: +(performance.now() - replanStartedAtMs).toFixed(1),
+          });
+          replanBusy = false;
+          replanStartedAtMs = 0;
+        }
         const { samples, lenInfo, speed } = moveState;
         const vlaSync =
           chkVlaLive &&
@@ -4311,101 +4616,70 @@
           // that queues replans faster than they can complete.
           if (replanBusy) {
             vlaMoveInFlight = false;
-          }
-          if (!vlaMoveInFlight) {
+          } else if (!vlaMoveInFlight) {
             vlaMoveInFlight = true;
+            let settled = false;
+            const timeoutHandle = setTimeout(function () {
+              if (settled) return;
+              settled = true;
+              vlaMoveInFlight = false;
+              logFrameEvent("vla", {
+                phase: "timeout-fallback-step",
+                timeoutMs: VLA_GATE_TIMEOUT_MS,
+              });
+              if (moveState && moveState.samples) {
+                advanceWheelchairStepWithSafety(
+                  VLA_PATH_STEP_METERS,
+                  samples,
+                  lenInfo,
+                  "vla"
+                );
+              }
+            }, VLA_GATE_TIMEOUT_MS);
             captureWheelchairViewToJpegBlob()
               .then(function (blob) {
                 return sendFrameToVla(blob);
               })
               .then(function () {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeoutHandle);
                 vlaMoveInFlight = false;
                 if (!moveState || !moveState.samples) return;
-                const step = VLA_PATH_STEP_METERS;
-                const riskReason = shouldStopAndReplanNow(
-                  wheelchairCameraSensor.lastScan,
-                  step
+                advanceWheelchairStepWithSafety(
+                  VLA_PATH_STEP_METERS,
+                  samples,
+                  lenInfo,
+                  "vla"
                 );
-                if (riskReason) {
-                  const s = wheelchairCameraSensor.lastScan;
-                  logFrameEvent("decision", {
-                    action: "stop-and-replan",
-                    reason: riskReason,
-                    fwd: s ? +((s.forwardClearanceM ?? NaN)).toFixed(3) : null,
-                    gap: s ? +((s.forwardPassageWidthM ?? NaN)).toFixed(3) : null,
-                    nearest: s && s.nearest ? +(s.nearest.distance).toFixed(3) : null,
-                  });
-                  setStatus("Stop + replan: " + riskReason);
-                  if (wheelchairCameraSensor.lastScan) {
-                    tryReplanAroundDetectedObstacle(wheelchairCameraSensor.lastScan, {
-                      force: true,
-                    });
-                  }
-                  return;
-                }
-                logFrameEvent("decision", {
-                  action: "advance",
-                  step: +step.toFixed(3),
-                  prevDist: +moveState.dist.toFixed(3),
-                });
-                moveState.dist = Math.min(moveState.dist + step, lenInfo.total);
-                if (moveState.dist >= lenInfo.total) {
-                  placeRobotOnPath(samples, lenInfo.total);
-                  moveState = null;
-                  setStatus("Wheelchair arrived (VLA stepped).");
-                } else {
-                  placeRobotOnPath(samples, moveState.dist);
-                  const pct = ((moveState.dist / lenInfo.total) * 100).toFixed(0);
-                  setStatus("VLA frame-by-frame · " + pct + "% along path");
-                }
               })
               .catch(function (e) {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeoutHandle);
                 vlaMoveInFlight = false;
                 const msg = e && e.message ? e.message : "";
                 if (msg.indexOf("FRAME_NOT_READY") === 0) {
                   setStatus("Waiting for full wheelchair frame load before next VLA step...");
                   return;
                 }
-                stopRobotAnim();
-                setStatus("VLA gate failed — movement stopped.");
+                logFrameEvent("vla", {
+                  phase: "error-fallback-step",
+                  reason: msg || String(e),
+                });
+                if (moveState && moveState.samples) {
+                  advanceWheelchairStepWithSafety(
+                    VLA_PATH_STEP_METERS,
+                    samples,
+                    lenInfo,
+                    "vla"
+                  );
+                }
               });
           }
         } else {
           const step = speed * dt;
-          const riskReason = shouldStopAndReplanNow(
-            wheelchairCameraSensor.lastScan,
-            step
-          );
-          if (riskReason) {
-            const s = wheelchairCameraSensor.lastScan;
-            logFrameEvent("decision", {
-              action: "stop-and-replan",
-              reason: riskReason,
-              fwd: s ? +((s.forwardClearanceM ?? NaN)).toFixed(3) : null,
-              gap: s ? +((s.forwardPassageWidthM ?? NaN)).toFixed(3) : null,
-              nearest: s && s.nearest ? +(s.nearest.distance).toFixed(3) : null,
-            });
-            setStatus("Stop + replan: " + riskReason);
-            if (wheelchairCameraSensor.lastScan) {
-              tryReplanAroundDetectedObstacle(wheelchairCameraSensor.lastScan, {
-                force: true,
-              });
-            }
-          } else {
-            logFrameEvent("decision", {
-              action: "advance",
-              step: +step.toFixed(3),
-              prevDist: +moveState.dist.toFixed(3),
-            });
-            moveState.dist += step;
-          }
-          if (moveState.dist >= lenInfo.total) {
-            placeRobotOnPath(samples, lenInfo.total);
-            moveState = null;
-            setStatus("Wheelchair arrived.");
-          } else {
-            placeRobotOnPath(samples, moveState.dist);
-          }
+          advanceWheelchairStepWithSafety(step, samples, lenInfo, "local");
         }
       }
       if (

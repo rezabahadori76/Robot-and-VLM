@@ -348,7 +348,8 @@ def build_app(cfg: dict) -> FastAPI:
         out_small = render_overlay_on_bgr(
             small,
             state,
-            draw_masks=False,
+            # User-requested mixed overlay: show SAM segmentation + DINO boxes together.
+            draw_masks=True,
             draw_boxes=True,
             box_line_thickness=int(viz.get("overlay_box_thickness", 2)),
             label_font_thickness=int(viz.get("overlay_label_thickness", 1)),

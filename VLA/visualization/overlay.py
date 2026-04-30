@@ -81,7 +81,6 @@ def render_overlay_on_bgr(
             mask_u8 = (mask * 255).astype(np.uint8)
             contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if contours:
-                cv2.drawContours(img, contours, -1, (b, g, r), max(1, int(box_line_thickness)))
                 largest = max(contours, key=cv2.contourArea)
                 m = cv2.moments(largest)
                 if m["m00"] > 1e-6:
@@ -94,16 +93,13 @@ def render_overlay_on_bgr(
                     cx, cy = int(xs.mean()), int(ys.mean())
                 seg_label_anchors.append((seg.label, float(seg.score), (b, g, r), (cx, cy)))
 
-    # Segment-first policy: detection boxes are disabled.
-    draw_boxes = False
-
     if draw_boxes:
         t = max(1, int(box_line_thickness))
         lt = max(1, int(label_font_thickness))
         for det in state.detections:
             x1, y1, x2, y2 = map(int, det.bbox_xyxy)
             col = _color_bgr_for_label(det.label)
-            cv2.rectangle(img, (x1, y1), (x2, y2), col, t)
+            # User preference: hide rectangle outlines, keep labels only.
             cv2.putText(
                 img,
                 f'{det.label}:{det.score:.2f}',
