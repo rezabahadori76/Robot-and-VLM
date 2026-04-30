@@ -87,10 +87,15 @@ def _mark_disk(
                 blocked.add(Cell(i=i, j=j))
 
 
-def _detection_radius(distance: Optional[float], base: float = 0.46) -> float:
+def _detection_radius(
+    distance: Optional[float],
+    base: float = 0.46,
+    min_keepout_m: float = 0.0,
+) -> float:
     d = distance if isinstance(distance, (int, float)) and math.isfinite(distance) else 2.0
     scale = max(0.82, min(1.28, 1.12 - d * 0.018))
-    return min(0.75, max(0.30, base * scale))
+    min_r = max(0.30, float(min_keepout_m or 0.0))
+    return min(0.75, max(min_r, base * scale))
 
 
 def _parse_blocked_keys(raw: object, nx: int, nz: int) -> Set[Cell]:
@@ -368,11 +373,16 @@ def plan_path(payload: dict) -> dict:
         )
 
     marked_detections = 0
+    min_keepout_m = float(payload.get("min_keepout_m", 0.0))
     for det in payload.get("detections", []):
         p = det.get("point") or {}
         if "x" not in p or "z" not in p:
             continue
-        r = _detection_radius(det.get("distance"), base=float(payload.get("detection_base_radius", 0.46)))
+        r = _detection_radius(
+            det.get("distance"),
+            base=float(payload.get("detection_base_radius", 0.46)),
+            min_keepout_m=min_keepout_m,
+        )
         _mark_disk(blocked, float(p["x"]), float(p["z"]), r, b, cell_size, nx, nz)
         marked_detections += 1
 

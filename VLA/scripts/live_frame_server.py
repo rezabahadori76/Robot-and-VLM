@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""FastAPI server: POST /process_frame (multipart JPEG) -> overlay JPEG (viz-style)."""
+"""
+FastAPI server:
+- POST /process_frame        (multipart JPEG) -> overlay JPEG (viz-style)
+- POST /process_frame_bundle (multipart JPEG) -> JSON { overlay_jpeg_b64, detections, segment_boundaries, ... }
+
+Policy (as requested by Robot UI):
+- Display: object detection (DINO boxes + labels)
+- Planning input: segmentation boundaries (SAM contours)
+"""
 from __future__ import annotations
 
 import argparse
@@ -54,6 +62,7 @@ def _configure_threads() -> None:
 _configure_threads()
 
 import io  # noqa: E402
+import base64  # noqa: E402
 
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
@@ -77,6 +86,48 @@ def _resize_max_side(bgr: np.ndarray, max_side: int) -> tuple[np.ndarray, float]
     s = max_side / m
     nw, nh = int(round(w * s)), int(round(h * s))
     return cv2.resize(bgr, (nw, nh), interpolation=cv2.INTER_AREA), s
+
+
+def _rle_decode(rle: dict) -> np.ndarray:
+    """Decode Fortran-order RLE into HxW uint8 mask."""
+    counts = rle.get("counts", [])
+    size = rle.get("size", None)
+    if not size or len(size) != 2:
+        raise ValueError("invalid rle size")
+    h, w = int(size[0]), int(size[1])
+    flat = np.zeros(h * w, dtype=np.uint8)
+    idx = 0
+    val = 0
+    for c in counts:
+        run = int(c)
+        if run <= 0:
+            continue
+        end = min(idx + run, flat.size)
+        if val == 1:
+            flat[idx:end] = 1
+        idx = end
+        val = 1 - val
+        if idx >= flat.size:
+            break
+    return flat.reshape((h, w), order="F")
+
+
+def _mask_to_contours(mask: np.ndarray) -> list[list[list[int]]]:
+    """Return simplified contours as list of point lists [[x,y], ...]."""
+    m = (mask.astype(np.uint8) * 255)
+    cnts, _hier = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    out: list[list[list[int]]] = []
+    for c in cnts:
+        if c is None or len(c) < 6:
+            continue
+        peri = float(cv2.arcLength(c, True))
+        eps = max(1.2, peri * 0.012)
+        approx = cv2.approxPolyDP(c, eps, True)
+        pts = approx.reshape(-1, 2)
+        if pts.shape[0] < 4:
+            continue
+        out.append([[int(x), int(y)] for x, y in pts])
+    return out
 
 
 def build_app(cfg: dict) -> FastAPI:
@@ -215,9 +266,9 @@ def build_app(cfg: dict) -> FastAPI:
         out_small = render_overlay_on_bgr(
             small,
             state,
+            # Legacy endpoint: keep default behavior as configured (typically masks).
             draw_masks=bool(viz.get("draw_masks", True)),
-            # Segment-only visualization policy: never render detection boxes in live bridge.
-            draw_boxes=False,
+            draw_boxes=bool(viz.get("draw_boxes", False)),
             box_line_thickness=int(viz.get("overlay_box_thickness", 2)),
             label_font_thickness=int(viz.get("overlay_label_thickness", 1)),
             draw_semantic_label=bool(viz.get("show_semantic_label", False)),
@@ -231,6 +282,107 @@ def build_app(cfg: dict) -> FastAPI:
         if not ok:
             raise HTTPException(status_code=500, detail="encode failed")
         return Response(content=buf.tobytes(), media_type="image/jpeg")
+
+    @app.post("/process_frame_bundle")
+    async def process_frame_bundle(frame: UploadFile = File(...)) -> JSONResponse:
+        """Return boxes overlay for display + segmentation boundaries for planning."""
+        raw = await frame.read()
+        if not raw:
+            raise HTTPException(status_code=400, detail="empty body")
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if bgr is None:
+            raise HTTPException(status_code=400, detail="not a valid image")
+
+        orig_h, orig_w = bgr.shape[:2]
+        small, _scale = _resize_max_side(bgr, max_side)
+
+        frame_counter["i"] += 1
+        fid = frame_counter["i"]
+        packet = FramePacket(
+            frame_id=fid,
+            timestamp=0.0,
+            rgb_path=None,
+            rgb=small,
+        )
+
+        try:
+            detections = detector.detect(packet)
+            if detections:
+                segments = segmenter.segment(packet, detections)
+            else:
+                segments = []
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        # Build contours in the ORIGINAL capture resolution for easy reprojection on the client.
+        seg_boundaries = []
+        for s in segments:
+            try:
+                m_small = _rle_decode(s.mask_rle)
+                if m_small.shape[0] != orig_h or m_small.shape[1] != orig_w:
+                    m = cv2.resize(m_small, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+                else:
+                    m = m_small
+                contours = _mask_to_contours(m)
+            except Exception:
+                contours = []
+            seg_boundaries.append(
+                {
+                    "label": s.label,
+                    "score": float(s.score),
+                    "bbox_xyxy": [float(x) for x in s.bbox_xyxy],
+                    "contours": contours,
+                }
+            )
+
+        # Render overlay for display: boxes only (DINO output).
+        state = FrameWorldState(
+            frame_id=fid,
+            timestamp=0.0,
+            pose=Pose(0.0, 0.0, 0.0),
+            detections=detections,
+            segments=segments,
+            semantics=SemanticFrame(room_label="", caption="", attributes={}),
+        )
+        out_small = render_overlay_on_bgr(
+            small,
+            state,
+            draw_masks=False,
+            draw_boxes=True,
+            box_line_thickness=int(viz.get("overlay_box_thickness", 2)),
+            label_font_thickness=int(viz.get("overlay_label_thickness", 1)),
+            draw_semantic_label=False,
+        )
+        if out_small.shape[1] != orig_w or out_small.shape[0] != orig_h:
+            out = cv2.resize(out_small, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+        else:
+            out = out_small
+        ok, buf = cv2.imencode(".jpg", out, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_q])
+        if not ok:
+            raise HTTPException(status_code=500, detail="encode failed")
+
+        det_payload = [
+            {
+                "label": d.label,
+                "score": float(d.score),
+                "bbox_xyxy": [float(x) for x in d.bbox_xyxy],
+            }
+            for d in detections
+        ]
+        return JSONResponse(
+            {
+                "ok": True,
+                "frame_id": fid,
+                "orig_w": orig_w,
+                "orig_h": orig_h,
+                "infer_w": int(small.shape[1]),
+                "infer_h": int(small.shape[0]),
+                "detections": det_payload,
+                "segment_boundaries": seg_boundaries,
+                "overlay_jpeg_b64": base64.b64encode(buf.tobytes()).decode("ascii"),
+            }
+        )
 
     return app
 

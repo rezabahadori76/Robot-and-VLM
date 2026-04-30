@@ -82,3 +82,6 @@ VLA/third_party/rtabmap/install/
 
 # --- Node (if tooling added later) ---
 node_modules/
+
+# Robot dev runtime artifacts
+Robot/.serve_robot.*.pid

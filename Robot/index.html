@@ -313,12 +313,15 @@
         </div>
         <label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;">
           <input type="checkbox" id="chk-vla-live" />
-          <span style="font-size:0.76rem;color:#c9d1d9;">VLA live overlay (DINO + SAM)</span>
+          <span style="font-size:0.76rem;color:#c9d1d9;">VLA live overlay (DINO boxes) + planning (SAM boundaries)</span>
         </label>
         <label for="inp-vla-url" style="margin-top:8px;">VLA API (live_frame_server)</label>
-        <input type="text" id="inp-vla-url" value="http://127.0.0.1:8787" autocomplete="off" spellcheck="false" />
+        <input type="text" id="inp-vla-url" value="/vla" autocomplete="off" spellcheck="false" />
         <p class="hint" style="margin-top:6px;">
-          When enabled, each camera frame is sent to VLA (detection + segmentation only; no VLM). The overlay updates, then the wheelchair advances a <strong>fixed step</strong> along the path (<code>VLA_PATH_STEP_METERS</code> in code). Start API: <code>python scripts/live_frame_server.py</code> in the VLA repo.
+          When enabled, each camera frame is sent to VLA. The UI displays <strong>object detection</strong> (boxes/labels),
+          while <strong>segmentation boundaries</strong> are used as dynamic obstacles for path replanning. The overlay updates,
+          then the wheelchair advances a <strong>fixed step</strong> along the path (<code>VLA_PATH_STEP_METERS</code> in code).
+          Start API: <code>python scripts/live_frame_server.py</code> in the VLA repo.
         </p>
         <p class="hint">
           Place <code>three.min.js</code> next to this file. Drag on the view to orbit. Inspect <code>ROBOT_HOUSE</code> in the console.
@@ -777,10 +780,21 @@
 
     /** Temporarily blocked cells (furniture / obstacle hits) for dynamic replanning */
     const dynamicObstacleCells = new Set();
+    /** Per-frame dynamic blocked cells inferred from VLA segmentation boundaries */
+    const vlaDynamicObstacleCells = new Set();
+
+    function _cellKey(i, j) {
+      return `${i},${j}`;
+    }
+
+    function _isAnyDynamicBlocked(i, j) {
+      const k = _cellKey(i, j);
+      return dynamicObstacleCells.has(k) || vlaDynamicObstacleCells.has(k);
+    }
 
     function cellWalkableNav(i, j) {
       if (!cellWalkable(i, j)) return false;
-      if (dynamicObstacleCells.has(`${i},${j}`)) return false;
+      if (_isAnyDynamicBlocked(i, j)) return false;
       return cellHasWallClearance(i, j, WALL_PATH_CLEARANCE_M);
     }
 
@@ -792,7 +806,9 @@
       // matching the intent of cellHasWallClearance() so we don't accidentally seal doorways.
       const inDoor = inDoorOpeningZone(x, z, 0.03);
       const base = Math.max(0.08, clearanceM || 0.3);
-      const r = inDoor ? Math.max(0.12, base * 0.62) : base;
+      // Hard safety rule: keep at least half wheelchair width from walls/objects.
+      const halfWidth = Math.max(0.18, WHEELCHAIR_BODY_WIDTH_M * 0.5);
+      const r = inDoor ? Math.max(halfWidth, base * 0.62) : Math.max(base, halfWidth);
       const dirs = 12;
       for (let i = 0; i < dirs; i++) {
         const a = (i / dirs) * Math.PI * 2;
@@ -852,7 +868,7 @@
     function cellWalkableEmergency(i, j) {
       const w = cellToWorld(i, j);
       if (isBlocked(w.x, w.z)) return false;
-      if (dynamicObstacleCells.has(`${i},${j}`)) return false;
+      if (_isAnyDynamicBlocked(i, j)) return false;
       if (!cellHasWallClearance(i, j, WALL_PATH_CLEARANCE_RELAXED_M)) return false;
       return hasWheelchairObjectClearanceAt(
         w.x,
@@ -861,7 +877,7 @@
       );
     }
 
-    function markDynamicObstacleDisk(wx, wz, radiusM) {
+    function markObstacleDiskIntoSet(targetSet, wx, wz, radiusM) {
       const c0 = worldToCell(wx, wz);
       const rIdx = Math.ceil(radiusM / CELL) + 1;
       for (let di = -rIdx; di <= rIdx; di++) {
@@ -871,10 +887,14 @@
           if (i < 0 || j < 0 || i >= nx || j >= nz) continue;
           const w = cellToWorld(i, j);
           if (Math.hypot(w.x - wx, w.z - wz) <= radiusM) {
-            dynamicObstacleCells.add(`${i},${j}`);
+            targetSet.add(_cellKey(i, j));
           }
         }
       }
+    }
+
+    function markDynamicObstacleDisk(wx, wz, radiusM) {
+      markObstacleDiskIntoSet(dynamicObstacleCells, wx, wz, radiusM);
     }
 
     /** 4-neighbor A* with width/risk-aware cost (prefers safer, wider passages). */
@@ -1840,116 +1860,198 @@
           if (n && n.isMesh) n.userData.noObjectKeepout = true;
         });
       }
+
+      // Realistic-ish materials
       const frameMat = new THREE.MeshStandardMaterial({
-        color: 0xf5f7fa,
-        roughness: 0.42,
-        metalness: 0.22,
-      });
-      const leafMat = new THREE.MeshStandardMaterial({
-        color: 0x8b5e3c,
+        color: 0xf2f3f5,
         roughness: 0.55,
+        metalness: 0.12,
+      });
+      const trimMat = new THREE.MeshStandardMaterial({
+        color: 0xf8f9fb,
+        roughness: 0.62,
         metalness: 0.08,
       });
-      const lintelMat = new THREE.MeshStandardMaterial({
-        color: 0xfff1c1,
-        emissive: 0x2c2408,
-        roughness: 0.46,
-        metalness: 0.18,
+      const leafMat = new THREE.MeshStandardMaterial({
+        color: 0x7a4d2c,
+        roughness: 0.62,
+        metalness: 0.06,
       });
       const panelMat = new THREE.MeshStandardMaterial({
-        color: 0x35261a,
-        roughness: 0.64,
-        metalness: 0.04,
+        color: 0x2e1d12,
+        roughness: 0.7,
+        metalness: 0.03,
       });
-      const handleMat = new THREE.MeshStandardMaterial({
-        color: 0xdce6f0,
-        roughness: 0.28,
-        metalness: 0.7,
+      const metalMat = new THREE.MeshStandardMaterial({
+        color: 0xd8e2ee,
+        roughness: 0.22,
+        metalness: 0.85,
       });
-      const DpZ = DOOR_HZ * 2 - 0.04;
-      const DpX = DOOR_HX * 2 - 0.04;
-      const H = 1.95;
-      const ymid = FLOOR_Y + H * 0.5;
-      const openY = 0.58;
+
+      // Door sizing
+      const doorClear = 0.012; // clearance between leaf and frame
+      const frameDepth = Math.max(0.06, WALL_T * 0.9);
+      const jambW = 0.07;
+      const headerH = 0.08;
+      const trimT = 0.012;
+      const trimW = 0.06;
+      const leafT = 0.04;
+      const leafH = 2.02;
+      const handleY = FLOOR_Y + 1.02;
+      const openAngle = 0.62; // ~35deg open
+
+      function addBox(parent, w, h, d, mat, x, y, z) {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+        m.position.set(x, y, z);
+        m.castShadow = true;
+        m.receiveShadow = true;
+        parent.add(m);
+        return m;
+      }
+
+      function addLeverHandle(parent, hx, hy, hz, rotY) {
+        const g = new THREE.Group();
+        g.position.set(hx, hy, hz);
+        if (rotY) g.rotation.y = rotY;
+        // base rosette
+        const base = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.01, 18), metalMat);
+        base.rotation.x = Math.PI / 2;
+        g.add(base);
+        // spindle
+        const spindle = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.05, 12), metalMat);
+        spindle.rotation.x = Math.PI / 2;
+        spindle.position.z = 0.02;
+        g.add(spindle);
+        // lever
+        const lever = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.12, 12), metalMat);
+        lever.rotation.z = Math.PI / 2;
+        lever.position.set(0.055, 0, 0.02);
+        g.add(lever);
+        parent.add(g);
+        return g;
+      }
+
+      function addHinges(parent, x, ymid, z, axisIsZ) {
+        const count = 3;
+        for (let i = 0; i < count; i++) {
+          const t = (i + 1) / (count + 1);
+          const yy = FLOOR_Y + 0.25 + t * (leafH - 0.5);
+          const h = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.035, 10), metalMat);
+          if (axisIsZ) {
+            h.rotation.x = Math.PI / 2;
+            h.position.set(x, yy - ymid, z);
+          } else {
+            h.rotation.z = Math.PI / 2;
+            h.position.set(x, yy - ymid, z);
+          }
+          parent.add(h);
+        }
+      }
+
+      function buildDoorV(spec) {
+        const g = new THREE.Group();
+        g.position.set(spec.x, 0, spec.z);
+
+        const openingW = DOOR_HZ * 2;
+        const openingD = WALL_T;
+        const ymid = FLOOR_Y + leafH * 0.5;
+
+        // Frame (jambs + header), centered in wall thickness (x axis)
+        addBox(g, frameDepth, leafH, jambW, frameMat, 0, ymid, openingW * 0.5 - jambW * 0.5);
+        addBox(g, frameDepth, leafH, jambW, frameMat, 0, ymid, -openingW * 0.5 + jambW * 0.5);
+        addBox(g, frameDepth, headerH, openingW, frameMat, 0, FLOOR_Y + leafH + headerH * 0.5, 0);
+
+        // Trim on both sides of wall, so it's clearly a door from both directions
+        for (const sx of [-1, 1]) {
+          const tx = sx * (openingD * 0.5 + trimT * 0.5);
+          addBox(g, trimT, leafH + headerH + 0.06, trimW, trimMat, tx, ymid + headerH * 0.22, openingW * 0.5 + trimW * 0.5 - 0.01);
+          addBox(g, trimT, leafH + headerH + 0.06, trimW, trimMat, tx, ymid + headerH * 0.22, -openingW * 0.5 - trimW * 0.5 + 0.01);
+          addBox(g, trimT, trimW, openingW + trimW * 2 - 0.02, trimMat, tx, FLOOR_Y + leafH + headerH + 0.03, 0);
+        }
+
+        // Leaf pivot on hinge side (along Z edge). Leaf sits slightly to one wall face.
+        const pivot = new THREE.Group();
+        const hingeZ = spec.flip * (openingW * 0.5 - doorClear);
+        const leafFaceX = spec.flip * (openingD * 0.5 - leafT * 0.5 - 0.006);
+        pivot.position.set(leafFaceX, ymid, hingeZ);
+        g.add(pivot);
+
+        const leaf = new THREE.Group();
+        const leafW = openingW - (jambW + doorClear) * 2;
+        // Move leaf so its hinge edge coincides with pivot (hinge line).
+        leaf.position.set(0, 0, -spec.flip * (leafW * 0.5));
+        pivot.add(leaf);
+
+        addBox(leaf, leafT, leafH, leafW, leafMat, 0, 0, 0);
+        // Simple inset panels
+        addBox(leaf, 0.012, leafH * 0.58, leafW * 0.62, panelMat, spec.flip * (leafT * 0.5 + 0.006), 0.0, 0);
+        addBox(leaf, 0.012, leafH * 0.22, leafW * 0.62, panelMat, spec.flip * (leafT * 0.5 + 0.006), leafH * 0.25, 0);
+
+        // Hinges (on pivot edge)
+        addHinges(pivot, 0, ymid, 0.01, true);
+
+        // Handles on both sides, at latch side (opposite hinge edge)
+        const latchZ = -spec.flip * (leafW * 0.5 - 0.11);
+        addLeverHandle(leaf, 0, handleY - ymid, latchZ, 0);
+        addLeverHandle(leaf, 0, handleY - ymid, latchZ, Math.PI);
+
+        pivot.rotation.y = spec.flip * openAngle;
+        markStructural(g);
+        scene.add(g);
+      }
+
+      function buildDoorH(spec) {
+        const g = new THREE.Group();
+        g.position.set(spec.x, 0, spec.z);
+
+        const openingW = DOOR_HX * 2;
+        const openingD = WALL_T;
+        const ymid = FLOOR_Y + leafH * 0.5;
+
+        // Frame (jambs + header), centered in wall thickness (z axis here)
+        addBox(g, jambW, leafH, frameDepth, frameMat, openingW * 0.5 - jambW * 0.5, ymid, 0);
+        addBox(g, jambW, leafH, frameDepth, frameMat, -openingW * 0.5 + jambW * 0.5, ymid, 0);
+        addBox(g, openingW, headerH, frameDepth, frameMat, 0, FLOOR_Y + leafH + headerH * 0.5, 0);
+
+        // Trim on both sides of wall (±Z)
+        for (const sz of [-1, 1]) {
+          const tz = sz * (openingD * 0.5 + trimT * 0.5);
+          addBox(g, trimW, leafH + headerH + 0.06, trimT, trimMat, openingW * 0.5 + trimW * 0.5 - 0.01, ymid + headerH * 0.22, tz);
+          addBox(g, trimW, leafH + headerH + 0.06, trimT, trimMat, -openingW * 0.5 - trimW * 0.5 + 0.01, ymid + headerH * 0.22, tz);
+          addBox(g, openingW + trimW * 2 - 0.02, trimW, trimT, trimMat, 0, FLOOR_Y + leafH + headerH + 0.03, tz);
+        }
+
+        // Leaf pivot on hinge side (along X edge). Leaf sits slightly to one wall face.
+        const pivot = new THREE.Group();
+        const hingeX = spec.flip * (openingW * 0.5 - doorClear);
+        const leafFaceZ = spec.flip * (openingD * 0.5 - leafT * 0.5 - 0.006);
+        pivot.position.set(hingeX, ymid, leafFaceZ);
+        g.add(pivot);
+
+        const leaf = new THREE.Group();
+        const leafW = openingW - (jambW + doorClear) * 2;
+        leaf.position.set(-spec.flip * (leafW * 0.5), 0, 0);
+        pivot.add(leaf);
+
+        addBox(leaf, leafW, leafH, leafT, leafMat, 0, 0, 0);
+        addBox(leaf, leafW * 0.62, leafH * 0.58, 0.012, panelMat, 0, 0.0, spec.flip * (leafT * 0.5 + 0.006));
+        addBox(leaf, leafW * 0.62, leafH * 0.22, 0.012, panelMat, 0, leafH * 0.25, spec.flip * (leafT * 0.5 + 0.006));
+
+        addHinges(pivot, 0.01, ymid, 0, false);
+
+        const latchX = -spec.flip * (leafW * 0.5 - 0.11);
+        addLeverHandle(leaf, latchX, handleY - ymid, 0, Math.PI / 2);
+        addLeverHandle(leaf, latchX, handleY - ymid, 0, -Math.PI / 2);
+
+        pivot.rotation.y = -spec.flip * openAngle;
+        markStructural(g);
+        scene.add(g);
+      }
+
       for (let di = 0; di < DOOR_SPECS.length; di++) {
         const d = DOOR_SPECS[di];
-        if (d.kind === "v") {
-          const g = new THREE.Group();
-          g.position.set(d.x, 0, d.z);
-          const top = new THREE.Mesh(
-            new THREE.BoxGeometry(0.11, 0.16, DpZ + 0.1),
-            lintelMat
-          );
-          top.position.set(0, FLOOR_Y + H + 0.05, 0);
-          g.add(top);
-          for (const side of [-1, 1]) {
-            const jm = new THREE.Mesh(
-              new THREE.BoxGeometry(0.09, H, 0.08),
-              frameMat
-            );
-            jm.position.set(0, ymid, side * (DpZ * 0.5 - 0.02));
-            g.add(jm);
-          }
-          const wing = new THREE.Group();
-          wing.position.set(0, ymid, d.flip * (DpZ * 0.5 - 0.04));
-          const leaf = new THREE.Mesh(
-            new THREE.BoxGeometry(0.07, H * 0.88, DpZ * 0.48),
-            leafMat
-          );
-          leaf.position.set(d.flip * 0.05, 0, -d.flip * (DpZ * 0.24));
-          wing.add(leaf);
-          const panel = new THREE.Mesh(
-            new THREE.BoxGeometry(0.02, H * 0.56, DpZ * 0.26),
-            panelMat
-          );
-          panel.position.set(d.flip * 0.11, 0.02, -d.flip * (DpZ * 0.19));
-          wing.add(panel);
-          const handle = new THREE.Mesh(new THREE.SphereGeometry(0.018, 12, 12), handleMat);
-          handle.position.set(d.flip * 0.13, 0.02, -d.flip * (DpZ * 0.08));
-          wing.add(handle);
-          wing.rotation.y = d.flip * openY;
-          g.add(wing);
-          markStructural(g);
-          scene.add(g);
-        } else {
-          const g = new THREE.Group();
-          g.position.set(d.x, 0, d.z);
-          const top = new THREE.Mesh(
-            new THREE.BoxGeometry(DpX + 0.1, 0.16, 0.11),
-            lintelMat
-          );
-          top.position.set(0, FLOOR_Y + H + 0.05, 0);
-          g.add(top);
-          for (const side of [-1, 1]) {
-            const jm = new THREE.Mesh(
-              new THREE.BoxGeometry(0.08, H, 0.09),
-              frameMat
-            );
-            jm.position.set(side * (DpX * 0.5 - 0.02), ymid, 0);
-            g.add(jm);
-          }
-          const wing = new THREE.Group();
-          wing.position.set(d.flip * (DpX * 0.5 - 0.04), ymid, 0);
-          const leaf = new THREE.Mesh(
-            new THREE.BoxGeometry(DpX * 0.48, H * 0.88, 0.07),
-            leafMat
-          );
-          leaf.position.set(-d.flip * (DpX * 0.24), 0, 0.05);
-          wing.add(leaf);
-          const panel = new THREE.Mesh(
-            new THREE.BoxGeometry(DpX * 0.26, H * 0.56, 0.02),
-            panelMat
-          );
-          panel.position.set(-d.flip * (DpX * 0.19), 0.02, 0.11);
-          wing.add(panel);
-          const handle = new THREE.Mesh(new THREE.SphereGeometry(0.018, 12, 12), handleMat);
-          handle.position.set(-d.flip * (DpX * 0.08), 0.02, 0.13);
-          wing.add(handle);
-          wing.rotation.y = -d.flip * openY;
-          g.add(wing);
-          markStructural(g);
-          scene.add(g);
-        }
+        if (d.kind === "v") buildDoorV(d);
+        else buildDoorH(d);
       }
     })();
 
@@ -3231,7 +3333,10 @@
         !!near.point &&
         inDoorOpeningZone(near.point.x, near.point.z);
       const gap = scan.forwardPassageWidthM;
-      if (gap != null && gap < WHEELCHAIR_BODY_WIDTH_M) {
+      // Sensor gap estimate is quantized/noisy. Add hysteresis so we don't deadlock
+      // when gap is almost equal to width (e.g. 0.669 vs 0.680).
+      const GAP_HYSTERESIS_M = 0.035;
+      if (!nearInDoorZone && gap != null && gap + GAP_HYSTERESIS_M < WHEELCHAIR_BODY_WIDTH_M) {
         return (
           "Passage narrower than wheelchair width " +
           `(gap=${fmtNum(gap)}m < width=${fmtNum(WHEELCHAIR_BODY_WIDTH_M)}m)`
@@ -3435,7 +3540,10 @@
           });
         }
       }
-      const dynBlocked = Array.from(dynamicObstacleCells);
+      const dynBlocked = Array.from(
+        new Set(Array.from(dynamicObstacleCells).concat(Array.from(vlaDynamicObstacleCells)))
+      );
+      const halfWidth = Math.max(0.18, WHEELCHAIR_BODY_WIDTH_M * 0.5);
       function buildPayload(blockedKeys) {
         return {
           bounds: OUTER_BOUNDS,
@@ -3457,7 +3565,9 @@
             doorCount: NAV_DOORS.length,
             source: "robot-index-map",
           },
-          detection_base_radius: OBSTACLE_BLOCK_RADIUS_M,
+          // Enforce object keepout >= half wheelchair width.
+          min_keepout_m: halfWidth,
+          detection_base_radius: Math.max(OBSTACLE_BLOCK_RADIUS_M, halfWidth),
           // NOTE: blocked_cells already encode wall clearance, and detections encode object keepout.
           // Setting an additional min_clearance_m here double-counts clearance and can create no-path.
           min_clearance_m: 0.0,
@@ -4000,6 +4110,86 @@
       });
     }
 
+    const vlaSegRaycaster = new THREE.Raycaster();
+    const _vlaTmpV = new THREE.Vector3();
+    const _vlaTmpDir = new THREE.Vector3();
+
+    function _b64ToBlob(b64, mime) {
+      const bin = atob(String(b64 || ""));
+      const len = bin.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+      return new Blob([bytes], { type: mime || "application/octet-stream" });
+    }
+
+    function _raycastWheelPixelToWorld(px, py, imgW, imgH) {
+      if (!wheelCam || !scene) return null;
+      const ndcX = (px / imgW) * 2 - 1;
+      const ndcY = -(py / imgH) * 2 + 1;
+      _vlaTmpV.set(ndcX, ndcY, 0.5).unproject(wheelCam);
+      _vlaTmpDir.copy(_vlaTmpV).sub(wheelCam.position).normalize();
+      vlaSegRaycaster.set(wheelCam.position, _vlaTmpDir);
+      vlaSegRaycaster.far = 18;
+      const hits = vlaSegRaycaster.intersectObjects(scene.children, true);
+      for (let i = 0; i < hits.length; i++) {
+        const h = hits[i];
+        if (!h || !h.object) continue;
+        if (meshIgnoredForNavClearance(h.object)) continue;
+        return h;
+      }
+      return null;
+    }
+
+    function updateVlaDynamicObstaclesFromBundle(bundle) {
+      vlaDynamicObstacleCells.clear();
+      if (!bundle || !bundle.segment_boundaries || !bundle.segment_boundaries.length) return 0;
+      const imgW = bundle.orig_w || bundle.infer_w || 1;
+      const imgH = bundle.orig_h || bundle.infer_h || 1;
+      const halfWidth = Math.max(0.18, WHEELCHAIR_BODY_WIDTH_M * 0.5);
+      const baseR = Math.min(0.75, Math.max(0.3, halfWidth));
+
+      let marked = 0;
+      let usedPoints = 0;
+      const MAX_SAMPLE_POINTS = 120;
+
+      for (let si = 0; si < bundle.segment_boundaries.length; si++) {
+        const s = bundle.segment_boundaries[si];
+        if (!s) continue;
+        const contours = s.contours || [];
+        for (let ci = 0; ci < contours.length; ci++) {
+          const c = contours[ci];
+          if (!c || c.length < 4) continue;
+          const stride = Math.max(1, Math.floor(c.length / 10));
+          for (let pi = 0; pi < c.length; pi += stride) {
+            if (usedPoints >= MAX_SAMPLE_POINTS) break;
+            const p = c[pi];
+            if (!p || p.length < 2) continue;
+            const hit = _raycastWheelPixelToWorld(p[0], p[1], imgW, imgH);
+            if (!hit || !hit.point) continue;
+            markObstacleDiskIntoSet(vlaDynamicObstacleCells, hit.point.x, hit.point.z, baseR);
+            marked++;
+            usedPoints++;
+          }
+          if (usedPoints >= MAX_SAMPLE_POINTS) break;
+        }
+        if (usedPoints >= MAX_SAMPLE_POINTS) break;
+
+        // Also sample bbox center for robustness.
+        if (s.bbox_xyxy && s.bbox_xyxy.length === 4 && usedPoints < MAX_SAMPLE_POINTS) {
+          const x1 = s.bbox_xyxy[0], y1 = s.bbox_xyxy[1], x2 = s.bbox_xyxy[2], y2 = s.bbox_xyxy[3];
+          const cx = (x1 + x2) * 0.5;
+          const cy = (y1 + y2) * 0.5;
+          const hit = _raycastWheelPixelToWorld(cx, cy, imgW, imgH);
+          if (hit && hit.point) {
+            markObstacleDiskIntoSet(vlaDynamicObstacleCells, hit.point.x, hit.point.z, baseR);
+            marked++;
+            usedPoints++;
+          }
+        }
+      }
+      return marked;
+    }
+
     function sendFrameToVla(blob, onDone) {
       if (!inpVlaUrl) {
         return Promise.reject(new Error("VLA URL missing"));
@@ -4010,10 +4200,10 @@
       fd.append("frame", blob, "wheel.jpg");
       logFrameEvent("vla", {
         phase: "request-start",
-        url: base + "/process_frame",
+        url: base + "/process_frame_bundle",
         bytes: blob ? blob.size : null,
       });
-      return fetch(base + "/process_frame", { method: "POST", body: fd })
+      return fetch(base + "/process_frame_bundle", { method: "POST", body: fd })
         .then(function (r) {
           if (!r.ok) throw new Error("HTTP " + r.status);
           logFrameEvent("vla", {
@@ -4021,9 +4211,20 @@
             status: r.status,
             elapsedMs: +(performance.now() - t0).toFixed(1),
           });
-          return r.blob();
+          return r.json();
         })
-        .then(function (b) {
+        .then(function (bundle) {
+          if (!bundle || !bundle.ok) throw new Error("VLA bundle not ok");
+          const marked = updateVlaDynamicObstaclesFromBundle(bundle);
+          logFrameEvent("vla", {
+            phase: "bundle-parsed",
+            detections: bundle.detections ? bundle.detections.length : 0,
+            segments: bundle.segment_boundaries ? bundle.segment_boundaries.length : 0,
+            markedCells: vlaDynamicObstacleCells.size,
+            markedSamples: marked,
+          });
+
+          const b = _b64ToBlob(bundle.overlay_jpeg_b64, "image/jpeg");
           if (vlaLiveImg) {
             if (vlaLiveImg._url) URL.revokeObjectURL(vlaLiveImg._url);
             vlaLiveImg._url = URL.createObjectURL(b);
@@ -4034,7 +4235,7 @@
               "VLA overlay ok · " + new Date().toLocaleTimeString();
           logFrameEvent("vla", {
             phase: "overlay-received",
-            bytes: b.size,
+            bytes: b ? b.size : null,
             totalElapsedMs: +(performance.now() - t0).toFixed(1),
           });
           if (typeof onDone === "function") onDone();
@@ -4106,6 +4307,11 @@
           vlaMoveInFlight: vlaMoveInFlight,
         });
         if (vlaSync) {
+          // While replanning, do not keep requesting VLA frames; it can create a busy-loop
+          // that queues replans faster than they can complete.
+          if (replanBusy) {
+            vlaMoveInFlight = false;
+          }
           if (!vlaMoveInFlight) {
             vlaMoveInFlight = true;
             captureWheelchairViewToJpegBlob()
@@ -4325,6 +4531,7 @@
       tryFromLastScan: tryReplanAroundDetectedObstacle,
       clearBlockedCells: function () {
         dynamicObstacleCells.clear();
+        vlaDynamicObstacleCells.clear();
       },
       params: {
         minClearanceM: REPLAN_MIN_CLEARANCE_M,
