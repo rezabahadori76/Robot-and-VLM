@@ -14,6 +14,10 @@ import os
 import socketserver
 
 
+class _ReusableThreadingTCPServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+
+
 class RobotDevRequestHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self) -> None:
         path = self.path.partition("?")[0].rstrip("/") or "/"
@@ -44,7 +48,7 @@ def main() -> None:
     args = parser.parse_args()
     root = os.path.dirname(os.path.abspath(__file__))
     os.chdir(root)
-    with socketserver.ThreadingTCPServer(
+    with _ReusableThreadingTCPServer(
         (args.bind, args.port), RobotDevRequestHandler
     ) as httpd:
         print(
