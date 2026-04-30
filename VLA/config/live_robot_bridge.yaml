@@ -8,7 +8,7 @@ detection:
   use_real_model: true
   device: cuda
   stabilization_enabled: false
-  box_threshold: 0.32
+  box_threshold: 0.45
   text_threshold: 0.2
   prompt: wall . floor . ceiling . window . curtain . blind . carpet . rug . sofa
     . couch . armchair . chair . table . coffee table . dining table . desk . tv .
@@ -21,9 +21,11 @@ segmentation:
   checkpoint: models/sam/sam_vit_h_4b8939.pth
   use_real_model: true
   device: cuda
+  # SAM mask quality score (0–1): keep segments at or above this value.
+  mask_score_threshold: 0.35
 visualization:
   draw_masks: true
-  draw_boxes: true
+  draw_boxes: false
   show_semantic_label: false
   overlay_box_thickness: 2
   overlay_label_thickness: 1

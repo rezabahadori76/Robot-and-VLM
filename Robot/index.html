@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
   <title>Wheelchair path — 3D home demo</title>
   <style>
     * { box-sizing: border-box; }
@@ -184,6 +186,28 @@
     #sensor-hud.muted {
       color: #6e7681;
     }
+    #frame-log-wrap {
+      margin-top: 8px;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      background: #0f1419;
+      padding: 6px;
+    }
+    #frame-log-title {
+      font-size: 0.66rem;
+      color: #8b949e;
+      margin: 0 0 4px;
+    }
+    #frame-log {
+      max-height: 120px;
+      overflow-y: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.62rem;
+      line-height: 1.35;
+      color: #c9d1d9;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
     #hud .hint {
       display: block;
       font-size: 0.65rem;
@@ -199,7 +223,7 @@
       top: 0;
       right: 0;
       bottom: 0;
-      width: 34%;
+      width: var(--wheel-view-width, 44%);
       z-index: 18;
       pointer-events: none;
       display: none;
@@ -210,7 +234,7 @@
     #vla-live-img {
       width: 100%;
       height: 100%;
-      object-fit: cover;
+      object-fit: fill;
       display: block;
       background: #0b1118;
     }
@@ -283,6 +307,10 @@
         <div id="status"></div>
         <div id="clearance" class="muted" aria-live="polite"></div>
         <div id="sensor-hud" class="muted" aria-live="polite"></div>
+        <div id="frame-log-wrap" aria-live="polite">
+          <p id="frame-log-title">Frame log</p>
+          <div id="frame-log"></div>
+        </div>
         <label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;">
           <input type="checkbox" id="chk-vla-live" />
           <span style="font-size:0.76rem;color:#c9d1d9;">VLA live overlay (DINO + SAM)</span>
@@ -315,8 +343,13 @@
     const HALF_T = WALL_T / 2;
     const DOOR_HZ = 0.48;
     const DOOR_HX = 0.48;
+    /** Keep wheelchair narrower than door opening (with explicit safety margin). */
+    const WHEELCHAIR_DOOR_MARGIN_M = 0.08;
     /** Lateral clearance (~wheelchair half-width) for robust segment tests */
-    const NAV_CLEAR_HALF = 0.34;
+    const NAV_CLEAR_HALF = Math.max(
+      0.2,
+      Math.min(0.34, DOOR_HX - WHEELCHAIR_DOOR_MARGIN_M)
+    );
 
     const OUTER_BOUNDS = { x0: -9.0, x1: 9.0, z0: -5.0, z1: 5.0 };
     /** Walkable floor envelope (kept aligned with enlarged plan) */
@@ -553,6 +586,20 @@
     }
 
     const CELL = 0.14;
+    const WHEELCHAIR_BODY_WIDTH_M = NAV_CLEAR_HALF * 2;
+    const WHEELCHAIR_SIDE_SAFETY_M = 0.08;
+    const MIN_PASSAGE_WIDTH_M = WHEELCHAIR_BODY_WIDTH_M + WHEELCHAIR_SIDE_SAFETY_M * 2;
+    const PREFERRED_PASSAGE_WIDTH_M = MIN_PASSAGE_WIDTH_M + 0.28;
+    const RISK_WEIGHT = 2.2;
+    // Strict keepout rule: maintain roughly one wheelchair width from obstacles.
+    const WHEELCHAIR_OBJECT_KEEP_DISTANCE_M = NAV_CLEAR_HALF + WHEELCHAIR_BODY_WIDTH_M;
+    const navClearanceCellCache = new Map();
+    const navObjectRaycaster = new THREE.Raycaster();
+    const FLOOR_LIKE_MAX_HEIGHT_M = 0.1;
+    const FLOOR_LIKE_MAX_TOP_Y_M = FLOOR_Y + 0.12;
+    const floorLikeMeshCache = new Map();
+    // Filled later after robot mesh construction; keep nullable to avoid TDZ during early nav init.
+    let robotGroup = null;
     const nx = Math.ceil((OUTER_BOUNDS.x1 - OUTER_BOUNDS.x0) / CELL) + 1;
     const nz = Math.ceil((OUTER_BOUNDS.z1 - OUTER_BOUNDS.z0) / CELL) + 1;
 
@@ -570,9 +617,87 @@
       };
     }
 
+    function meshIgnoredForNavClearance(mesh) {
+      if (!mesh || !mesh.isMesh) return true;
+      if (mesh.userData && mesh.userData.noNavCollision) return true;
+      // Structural geometry is already handled by wall/footprint collision checks.
+      if (mesh.userData && mesh.userData.noObjectKeepout) return true;
+      if (isFloorLikeTraversableMesh(mesh)) return true;
+      return meshExcludedFromSensor(mesh);
+    }
+
+    function hasWheelchairObjectClearanceAt(x, z, minClearanceM) {
+      if (!(minClearanceM > 0)) return true;
+      const dirs = 16;
+      const heights = [FLOOR_Y + 0.33, FLOOR_Y + 0.72];
+      const origin = new THREE.Vector3();
+      const dir = new THREE.Vector3();
+      for (let hi = 0; hi < heights.length; hi++) {
+        origin.set(x, heights[hi], z);
+        for (let i = 0; i < dirs; i++) {
+          const a = (i / dirs) * Math.PI * 2;
+          dir.set(Math.cos(a), 0, Math.sin(a));
+          navObjectRaycaster.set(origin, dir);
+          navObjectRaycaster.far = minClearanceM;
+          const hits = navObjectRaycaster.intersectObjects(scene.children, true);
+          for (let k = 0; k < hits.length; k++) {
+            const h = hits[k];
+            if (!meshIgnoredForNavClearance(h.object)) {
+              if (h.distance <= minClearanceM) return false;
+              break;
+            }
+          }
+        }
+      }
+      return true;
+    }
+
     function cellWalkable(i, j) {
       const { x, z } = cellToWorld(i, j);
-      return !isBlocked(x, z);
+      if (isBlocked(x, z)) return false;
+      const ck = `${i},${j}`;
+      if (navClearanceCellCache.has(ck)) return navClearanceCellCache.get(ck);
+      const ok = hasWheelchairObjectClearanceAt(
+        x,
+        z,
+        WHEELCHAIR_OBJECT_KEEP_DISTANCE_M
+      );
+      navClearanceCellCache.set(ck, ok);
+      return ok;
+    }
+
+    function pointBlockedByWalkFn(x, z, walkFn) {
+      const c = worldToCell(x, z);
+      return !walkFn(c.i, c.j);
+    }
+
+    /** Width estimate around a point: checks opposite-direction free spans (X/Z). */
+    function estimatePassageWidthAt(x, z, walkFn) {
+      if (inDoorOpeningZone(x, z)) {
+        // Doors are explicit passable connectors in this house model.
+        return Math.max(PREFERRED_PASSAGE_WIDTH_M, WHEELCHAIR_BODY_WIDTH_M);
+      }
+      const step = 0.04;
+      const far = 1.3;
+      function march(dx, dz) {
+        for (let s = step; s <= far; s += step) {
+          if (pointBlockedByWalkFn(x + dx * s, z + dz * s, walkFn)) {
+            return s - step;
+          }
+        }
+        return far;
+      }
+      const px = march(1, 0);
+      const nxm = march(-1, 0);
+      const pz = march(0, 1);
+      const nzm = march(0, -1);
+      const widthX = px + nxm;
+      const widthZ = pz + nzm;
+      return Math.min(widthX, widthZ);
+    }
+
+    function passageAllowedForWheelchairAt(x, z, walkFn) {
+      return estimatePassageWidthAt(x, z, walkFn) >= MIN_PASSAGE_WIDTH_M;
     }
 
     /** Temporarily blocked cells (furniture / obstacle hits) for dynamic replanning */
@@ -599,14 +724,39 @@
       }
     }
 
-    /** 4-neighbor A* (no diagonals through wall corners). Optional walkableFn for dynamic obstacles. */
+    /** 4-neighbor A* with width/risk-aware cost (prefers safer, wider passages). */
     function astarGrid4(si, sj, gi, gj, walkableFn) {
       const walk = walkableFn || cellWalkable;
       if (!walk(si, sj) || !walk(gi, gj)) return null;
+      const sWorld = cellToWorld(si, sj);
+      const gWorld = cellToWorld(gi, gj);
+      if (
+        !passageAllowedForWheelchairAt(sWorld.x, sWorld.z, walk) ||
+        !passageAllowedForWheelchairAt(gWorld.x, gWorld.z, walk)
+      ) {
+        return null;
+      }
       const key = (i, j) => `${i},${j}`;
       const open = new Map();
       const gScore = new Map();
       const parent = new Map();
+      const widthCache = new Map();
+      function widthAtCell(i, j) {
+        const k = key(i, j);
+        if (widthCache.has(k)) return widthCache.get(k);
+        const w = cellToWorld(i, j);
+        const width = estimatePassageWidthAt(w.x, w.z, walk);
+        widthCache.set(k, width);
+        return width;
+      }
+      function riskPenalty(width) {
+        if (width >= PREFERRED_PASSAGE_WIDTH_M) return 0;
+        if (width <= MIN_PASSAGE_WIDTH_M) return 1;
+        return (
+          (PREFERRED_PASSAGE_WIDTH_M - width) /
+          (PREFERRED_PASSAGE_WIDTH_M - MIN_PASSAGE_WIDTH_M)
+        );
+      }
       const hE = (i, j) => {
         const w = cellToWorld(i, j);
         const g = cellToWorld(gi, gj);
@@ -645,9 +795,11 @@
           const nj = cj + dj;
           if (ni < 0 || nj < 0 || ni >= nx || nj >= nz) continue;
           if (!walk(ni, nj)) continue;
+          const localWidth = widthAtCell(ni, nj);
+          if (localWidth < MIN_PASSAGE_WIDTH_M) continue;
           const nk = key(ni, nj);
           if (closed.has(nk)) continue;
-          const ng = cg + CELL;
+          const ng = cg + CELL * (1 + RISK_WEIGHT * riskPenalty(localWidth));
           if (!gScore.has(nk) || ng < gScore.get(nk)) {
             gScore.set(nk, ng);
             parent.set(nk, bestK);
@@ -763,6 +915,15 @@
           const x = ax + (bx - ax) * t + ox;
           const z = az + (bz - az) * t + oz;
           if (isBlocked(x, z)) return false;
+          if (
+            !hasWheelchairObjectClearanceAt(
+              x,
+              z,
+              WHEELCHAIR_OBJECT_KEEP_DISTANCE_M
+            )
+          ) {
+            return false;
+          }
         }
       }
       return true;
@@ -1110,17 +1271,13 @@
     const scene = new THREE.Scene();
     scene.fog = new THREE.Fog(0x0b1118, 24, 64);
     const clock = new THREE.Clock();
+    const APP_BUILD_ID = "2026-04-30-map-replan-v4-nocache-srv";
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
-    const VIEW_SPLIT = 0.66; // left: main view, right: wheelchair camera
+    const VIEW_SPLIT = 0.56; // left: main view, right: wheelchair camera (wider right pane)
     /** One VLA inference ↔ one discrete step along the yellow path (meters of arc length). */
     const VLA_PATH_STEP_METERS = 0.1;
-    /** ~2× zoom-out vs old 112°: double visible span at same depth (cap FOV for usable distortion). */
-    const WHEELCAM_FOV_PREV_DEG = 112;
-    const _wheelHalfRad = THREE.MathUtils.degToRad(WHEELCAM_FOV_PREV_DEG) / 2;
-    const wheelCamFovDeg = Math.min(
-      THREE.MathUtils.radToDeg(2 * Math.atan(2 * Math.tan(_wheelHalfRad))),
-      130
-    );
+    /** Wider wheelchair camera field for stronger zoom-out. */
+    const wheelCamFovDeg = 138;
     const wheelCam = new THREE.PerspectiveCamera(wheelCamFovDeg, 1, 0.05, 40);
     wheelCam.position.set(0, 1.02, 0.22);
     wheelCam.rotation.x = -0.04;
@@ -1129,6 +1286,99 @@
     const clearanceEl = document.getElementById("clearance");
     const sensorHudEl = document.getElementById("sensor-hud");
     const hudEl = document.getElementById("hud");
+    const frameLogEl = document.getElementById("frame-log");
+    const frameLogLines = [];
+    let frameTickCount = 0;
+    let frameEventSeq = 0;
+
+    function fmtNum(v) {
+      return v == null || !Number.isFinite(v) ? "-" : v.toFixed(2);
+    }
+
+    function logFrameEvent(kind, msg) {
+      if (!frameLogEl) return;
+      const t = new Date().toLocaleTimeString();
+      frameEventSeq += 1;
+      let body = msg;
+      if (typeof msg === "object" && msg !== null) {
+        try {
+          body = JSON.stringify(msg);
+        } catch (_) {
+          body = String(msg);
+        }
+      }
+      frameLogLines.push(`[${t}] #${frameEventSeq} ${kind}: ${body}`);
+      if (frameLogLines.length > 220) {
+        frameLogLines.splice(0, frameLogLines.length - 220);
+      }
+      frameLogEl.textContent = frameLogLines.join("\n");
+      frameLogEl.scrollTop = frameLogEl.scrollHeight;
+    }
+    function syncWheelOverlayWidth() {
+      const pct = (1 - VIEW_SPLIT) * 100;
+      document.documentElement.style.setProperty("--wheel-view-width", pct.toFixed(2) + "%");
+    }
+    syncWheelOverlayWidth();
+    if (camMetaEl) {
+      camMetaEl.textContent += " | " + APP_BUILD_ID;
+    }
+    logFrameEvent("build", { id: APP_BUILD_ID });
+    let pendingAssetLoads = 0;
+    let wheelFramePrimed = false;
+
+    function beginAssetLoad() {
+      pendingAssetLoads += 1;
+      wheelFramePrimed = false;
+    }
+    function endAssetLoad() {
+      pendingAssetLoads = Math.max(0, pendingAssetLoads - 1);
+      navClearanceCellCache.clear();
+      floorLikeMeshCache.clear();
+    }
+
+    function waitForWheelFrameReady(maxWaitMs) {
+      const timeoutMs = typeof maxWaitMs === "number" ? maxWaitMs : 4500;
+      const started = performance.now();
+      logFrameEvent("frame-ready", { phase: "wait-start", timeoutMs: timeoutMs });
+      return new Promise(function (resolve, reject) {
+        function poll() {
+          if (pendingAssetLoads === 0) {
+            if (wheelFramePrimed) {
+              logFrameEvent("frame-ready", {
+                phase: "ready",
+                waitMs: +(performance.now() - started).toFixed(1),
+              });
+              resolve();
+              return;
+            }
+            // Warm one render pass so newly-loaded materials/textures are ready before capture.
+            try {
+              renderer.render(scene, wheelCam);
+            } catch (_) {}
+            requestAnimationFrame(function () {
+              wheelFramePrimed = true;
+              logFrameEvent("frame-ready", {
+                phase: "primed",
+                waitMs: +(performance.now() - started).toFixed(1),
+              });
+              resolve();
+            });
+            return;
+          }
+          if (performance.now() - started > timeoutMs) {
+            logFrameEvent("frame-ready", {
+              phase: "timeout",
+              pendingAssetLoads: pendingAssetLoads,
+              waitMs: +(performance.now() - started).toFixed(1),
+            });
+            reject(new Error("FRAME_NOT_READY: assets are still loading"));
+            return;
+          }
+          setTimeout(poll, 40);
+        }
+        poll();
+      });
+    }
     const hudBodyEl = document.getElementById("hud-body");
     const btnHudCollapse = document.getElementById("btn-hud-collapse");
     if (btnHudCollapse && hudEl && hudBodyEl) {
@@ -1279,6 +1529,7 @@
       mesh.rotation.x = -Math.PI / 2;
       mesh.position.set((x0 + x1) / 2, FLOOR_Y + 0.01, (z0 + z1) / 2);
       mesh.receiveShadow = true;
+      mesh.userData.noNavCollision = true;
       scene.add(mesh);
     }
 
@@ -1305,10 +1556,16 @@
 
     /** Dark door threshold strips on floor */
     (function addDoorFloorMarks() {
-      const mat = new THREE.MeshStandardMaterial({
-        color: 0x4d3f32,
-        roughness: 0.72,
-        metalness: 0.06,
+      const matOuter = new THREE.MeshStandardMaterial({
+        color: 0xe3b341,
+        emissive: 0x3a2a00,
+        roughness: 0.58,
+        metalness: 0.08,
+      });
+      const matInner = new THREE.MeshStandardMaterial({
+        color: 0x2a2520,
+        roughness: 0.78,
+        metalness: 0.03,
       });
       for (let i = 0; i < DOOR_DEFS.length; i++) {
         const d = DOOR_DEFS[i];
@@ -1316,16 +1573,26 @@
         const x1 = d.x + DOOR_HX;
         const z0 = d.z - DOOR_HZ;
         const z1 = d.z + DOOR_HZ;
-        const g = new THREE.PlaneGeometry(x1 - x0, z1 - z0);
-        const mesh = new THREE.Mesh(g, mat);
-        mesh.rotation.x = -Math.PI / 2;
-        mesh.position.set(
+        const outer = new THREE.Mesh(
+          new THREE.PlaneGeometry((x1 - x0) + 0.12, (z1 - z0) + 0.12),
+          matOuter
+        );
+        outer.rotation.x = -Math.PI / 2;
+        outer.position.set(
           (x0 + x1) * 0.5,
           FLOOR_Y + 0.038,
           (z0 + z1) * 0.5
         );
-        mesh.receiveShadow = true;
-        scene.add(mesh);
+        outer.receiveShadow = true;
+        outer.userData.noNavCollision = true;
+        scene.add(outer);
+        const inner = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), matInner);
+        inner.rotation.x = -Math.PI / 2;
+        inner.position.copy(outer.position);
+        inner.position.y += 0.002;
+        inner.receiveShadow = true;
+        inner.userData.noNavCollision = true;
+        scene.add(inner);
       }
     })();
 
@@ -1365,6 +1632,7 @@
       mesh.position.set(cx, FLOOR_Y + WALL_H / 2, cz);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
+      mesh.userData.noObjectKeepout = true;
       scene.add(mesh);
       return mesh;
     }
@@ -1406,20 +1674,36 @@
     }
 
     (function addDoors3D() {
+      function markStructural(root) {
+        root.traverse(function (n) {
+          if (n && n.isMesh) n.userData.noObjectKeepout = true;
+        });
+      }
       const frameMat = new THREE.MeshStandardMaterial({
-        color: 0x4a3f35,
-        roughness: 0.78,
-        metalness: 0.1,
+        color: 0xf5f7fa,
+        roughness: 0.42,
+        metalness: 0.22,
       });
       const leafMat = new THREE.MeshStandardMaterial({
-        color: 0x6d5344,
-        roughness: 0.7,
-        metalness: 0.05,
+        color: 0x8b5e3c,
+        roughness: 0.55,
+        metalness: 0.08,
       });
       const lintelMat = new THREE.MeshStandardMaterial({
-        color: 0x5a5a5e,
-        roughness: 0.55,
-        metalness: 0.25,
+        color: 0xfff1c1,
+        emissive: 0x2c2408,
+        roughness: 0.46,
+        metalness: 0.18,
+      });
+      const panelMat = new THREE.MeshStandardMaterial({
+        color: 0x35261a,
+        roughness: 0.64,
+        metalness: 0.04,
+      });
+      const handleMat = new THREE.MeshStandardMaterial({
+        color: 0xdce6f0,
+        roughness: 0.28,
+        metalness: 0.7,
       });
       const DpZ = DOOR_HZ * 2 - 0.04;
       const DpX = DOOR_HX * 2 - 0.04;
@@ -1453,8 +1737,18 @@
           );
           leaf.position.set(d.flip * 0.05, 0, -d.flip * (DpZ * 0.24));
           wing.add(leaf);
+          const panel = new THREE.Mesh(
+            new THREE.BoxGeometry(0.02, H * 0.56, DpZ * 0.26),
+            panelMat
+          );
+          panel.position.set(d.flip * 0.11, 0.02, -d.flip * (DpZ * 0.19));
+          wing.add(panel);
+          const handle = new THREE.Mesh(new THREE.SphereGeometry(0.018, 12, 12), handleMat);
+          handle.position.set(d.flip * 0.13, 0.02, -d.flip * (DpZ * 0.08));
+          wing.add(handle);
           wing.rotation.y = d.flip * openY;
           g.add(wing);
+          markStructural(g);
           scene.add(g);
         } else {
           const g = new THREE.Group();
@@ -1481,8 +1775,18 @@
           );
           leaf.position.set(-d.flip * (DpX * 0.24), 0, 0.05);
           wing.add(leaf);
+          const panel = new THREE.Mesh(
+            new THREE.BoxGeometry(DpX * 0.26, H * 0.56, 0.02),
+            panelMat
+          );
+          panel.position.set(-d.flip * (DpX * 0.19), 0.02, 0.11);
+          wing.add(panel);
+          const handle = new THREE.Mesh(new THREE.SphereGeometry(0.018, 12, 12), handleMat);
+          handle.position.set(-d.flip * (DpX * 0.08), 0.02, 0.13);
+          wing.add(handle);
           wing.rotation.y = -d.flip * openY;
           g.add(wing);
+          markStructural(g);
           scene.add(g);
         }
       }
@@ -1525,6 +1829,7 @@
         }
       }
       function loadObjAsset(dir, mtlFile, objFile, pos, targetMaxDim, rot, onErrorFallback) {
+        beginAssetLoad();
         function idxFromObj(raw, len) {
           const n = parseInt(raw, 10);
           if (!Number.isFinite(n)) return null;
@@ -1596,11 +1901,16 @@
             const texFile = pickMapFromMtl(res[1]);
             let mat = new THREE.MeshStandardMaterial({ color: 0xd2d7de, roughness: 0.72, metalness: 0.08 });
             if (texFile) {
+              beginAssetLoad();
               const tex = new THREE.TextureLoader().load(
                 dir + texFile,
+                function () {
+                  endAssetLoad();
+                },
                 undefined,
-                undefined,
-                function () {}
+                function () {
+                  endAssetLoad();
+                }
               );
               tex.colorSpace = THREE.SRGBColorSpace;
               tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
@@ -1621,16 +1931,20 @@
             mesh.castShadow = true;
             mesh.receiveShadow = true;
             scene.add(mesh);
+            endAssetLoad();
           })
           .catch(function () {
+            endAssetLoad();
             if (onErrorFallback) onErrorFallback();
           });
       }
       function loadTdsAsset(dir, file3ds, pos, targetMaxDim, rot, onErrorFallback) {
+        beginAssetLoad();
         let loader = null;
         try {
           loader = new THREE.TDSLoader();
         } catch (e) {
+          endAssetLoad();
           if (onErrorFallback) onErrorFallback();
           return;
         }
@@ -1657,9 +1971,11 @@
               }
             });
             scene.add(obj);
+            endAssetLoad();
           },
           undefined,
           function () {
+            endAssetLoad();
             if (onErrorFallback) onErrorFallback();
           }
         );
@@ -2177,6 +2493,7 @@
         const mesh = new THREE.Mesh(new THREE.PlaneGeometry(worldW, worldD), mat);
         mesh.rotation.x = -Math.PI / 2;
         mesh.position.set(cx, FLOOR_Y + 0.055, cz);
+        mesh.userData.noNavCollision = true;
         scene.add(mesh);
       }
       textPlane("LIVING ROOM", 2.5, 0.62, R0.cx, R0.cz + 1.05);
@@ -2194,6 +2511,7 @@
     let startMesh = null;
     let endMesh = null;
     let pathLine = null;
+    const PATH_LAYER = 1;
     /** Last path samples for replay */
     let lastPathFlat = null;
     let pathCurveSamples = null;
@@ -2333,9 +2651,25 @@
       return root;
     }
 
-    const robotGroup = buildRobot();
+    robotGroup = buildRobot();
     scene.add(robotGroup);
     robotGroup.add(wheelCam);
+    function isFloorLikeTraversableMesh(mesh) {
+      if (!mesh || !mesh.isMesh) return false;
+      if (mesh.userData && mesh.userData.traversableSurface) return true;
+      const key = mesh.uuid || mesh.id;
+      if (floorLikeMeshCache.has(key)) return floorLikeMeshCache.get(key);
+      let ok = false;
+      try {
+        const box = new THREE.Box3().setFromObject(mesh);
+        if (box.isEmpty() === false) {
+          const h = box.max.y - box.min.y;
+          ok = h <= FLOOR_LIKE_MAX_HEIGHT_M && box.max.y <= FLOOR_LIKE_MAX_TOP_Y_M;
+        }
+      } catch (_) {}
+      floorLikeMeshCache.set(key, ok);
+      return ok;
+    }
 
     /** Shared exclusion for wheelchair clearance + camera-mounted “object detection” rays */
     function meshExcludedFromSensor(mesh) {
@@ -2344,6 +2678,7 @@
         if (o === robotGroup) return true;
         o = o.parent;
       }
+      if (isFloorLikeTraversableMesh(mesh)) return true;
       if (pathLine && mesh === pathLine) return true;
       if (startMesh && mesh === startMesh) return true;
       if (endMesh && mesh === endMesh) return true;
@@ -2456,20 +2791,51 @@
           return a.distance - b.distance;
         });
         let forwardMin = Infinity;
+        const rowsByNdcY = new Map();
         for (let i = 0; i < perRay.length; i++) {
           const pr = perRay[i];
           if (!pr.hit) continue;
           if (isForwardSectorNdc(pr.ndc.x, pr.ndc.y)) {
             forwardMin = Math.min(forwardMin, pr.hit.distance);
           }
+          let row = rowsByNdcY.get(pr.ndc.y);
+          if (!row) {
+            row = [];
+            rowsByNdcY.set(pr.ndc.y, row);
+          }
+          row.push(pr);
         }
         if (!Number.isFinite(forwardMin)) forwardMin = null;
+        let forwardGap = Infinity;
+        rowsByNdcY.forEach(function (row) {
+          let left = null;
+          let right = null;
+          for (let i = 0; i < row.length; i++) {
+            const pr = row[i];
+            if (!pr.hit) continue;
+            const local = wheelCam.worldToLocal(pr.hit.point.clone());
+            if (local.z >= -0.05) continue;
+            if (pr.ndc.x < 0) {
+              if (!left || pr.ndc.x < left.ndc.x) left = { ndc: pr.ndc, p: local };
+            } else if (pr.ndc.x > 0) {
+              if (!right || pr.ndc.x > right.ndc.x) right = { ndc: pr.ndc, p: local };
+            }
+          }
+          if (left && right) {
+            const localGap = Math.abs(right.p.x - left.p.x);
+            if (Number.isFinite(localGap) && localGap > 0) {
+              forwardGap = Math.min(forwardGap, localGap);
+            }
+          }
+        });
+        if (!Number.isFinite(forwardGap)) forwardGap = null;
         const nearest = detections.length ? detections[0] : null;
         lastScan = {
           time: typeof performance !== "undefined" ? performance.now() : Date.now(),
           detections: detections,
           nearest: nearest,
           forwardClearanceM: forwardMin,
+          forwardPassageWidthM: forwardGap,
           rays: perRay,
           configSnapshot: {
             maxRangeM: config.maxRangeM,
@@ -2615,6 +2981,7 @@
 
     function setStatus(msg) {
       document.getElementById("status").textContent = msg;
+      logFrameEvent("status", msg);
     }
 
     function updateMarkers() {
@@ -2650,12 +3017,75 @@
       }
     }
 
-    /** Dynamic replan: forward clearance too low → block grid cells at hit point, A* from here → goal */
-    const REPLAN_MIN_CLEARANCE_M = 0.95;
+    /** Dynamic replan: stop/replan when obstacle is within 1 meter. */
+    const REPLAN_MIN_CLEARANCE_M = 1.0;
     const OBSTACLE_BLOCK_RADIUS_M = 0.46;
+    const CANDIDATE_RISK_WEIGHT = 3.5;
     let replanBusy = false;
     let lastReplanTime = 0;
     const REPLAN_COOLDOWN_MS = 900;
+
+    function pathPointAtDistance(samples, lenInfo, distAlong) {
+      const { cum, total } = lenInfo;
+      const d = Math.min(Math.max(distAlong, 0), total);
+      let i = 0;
+      while (i < cum.length - 1 && cum[i + 1] < d) i++;
+      const a = samples[i];
+      const b = samples[i + 1] || samples[i];
+      const segStart = cum[i];
+      const segEnd = cum[i + 1] ?? segStart;
+      const u = segEnd > segStart ? (d - segStart) / (segEnd - segStart) : 0;
+      return {
+        x: THREE.MathUtils.lerp(a.x, b.x, u),
+        z: THREE.MathUtils.lerp(a.z, b.z, u),
+      };
+    }
+
+    function shouldStopAndReplanNow(scan, stepMeters) {
+      if (!moveState || !scan) return null;
+      const near = scan.nearest;
+      const nearInDoorZone =
+        !!near &&
+        !!near.point &&
+        inDoorOpeningZone(near.point.x, near.point.z);
+      const gap = scan.forwardPassageWidthM;
+      if (gap != null && gap < WHEELCHAIR_BODY_WIDTH_M) {
+        return (
+          "Passage narrower than wheelchair width " +
+          `(gap=${fmtNum(gap)}m < width=${fmtNum(WHEELCHAIR_BODY_WIDTH_M)}m)`
+        );
+      }
+      const nextDist = Math.min(moveState.dist + Math.max(0.01, stepMeters), moveState.lenInfo.total);
+      const curr = { x: robotGroup.position.x, z: robotGroup.position.z };
+      const next = pathPointAtDistance(moveState.samples, moveState.lenInfo, nextDist);
+      if (!segmentWalkableRobust(curr.x, curr.z, next.x, next.z)) {
+        return "Predicted corner/body collision on next step";
+      }
+      if (!passageAllowedForWheelchairAt(next.x, next.z, cellWalkableNav)) {
+        return "Next segment too tight for wheelchair";
+      }
+      const fwd = scan.forwardClearanceM;
+      if (fwd != null && fwd <= REPLAN_MIN_CLEARANCE_M) {
+        // Inside a doorway, ray-based forward clearance can collapse to near-zero on frames/door jambs.
+        // Avoid deadlock: if geometric path checks above are safe, allow passing through the door zone.
+        if (nearInDoorZone) {
+          return null;
+        }
+        // If gap is unavailable, do not hard-stop solely on forward ray.
+        if (gap == null) {
+          return null;
+        }
+        const safeGap = WHEELCHAIR_BODY_WIDTH_M + WHEELCHAIR_SIDE_SAFETY_M;
+        if (gap == null || gap < safeGap) {
+          return (
+            "Obstacle within 1m " +
+            `(fwd=${fmtNum(fwd)}m <= ${fmtNum(REPLAN_MIN_CLEARANCE_M)}m, ` +
+            `gap=${fmtNum(gap)}m, safeGap=${fmtNum(safeGap)}m)`
+          );
+        }
+      }
+      return null;
+    }
 
     function applyNewPathFromPolyline(worldPts2D, howMsg) {
       stopRobotAnim();
@@ -2673,6 +3103,8 @@
       const tube = new THREE.TubeGeometry(curve, Math.max(8, pts.length * 3), 0.06, 8, false);
       const mat = new THREE.MeshStandardMaterial({ color: 0xd29922, emissive: 0x442200 });
       pathLine = new THREE.Mesh(tube, mat);
+      // Keep route visible in top/orbit view, hidden from wheelchair camera.
+      pathLine.layers.set(PATH_LAYER);
       scene.add(pathLine);
       const samples = sampleCurvePoints(pts);
       pathCurveSamples = samples;
@@ -2682,15 +3114,118 @@
       setStatus(howMsg || "New path.");
     }
 
-    function tryReplanAroundDetectedObstacle(scan) {
-      if (replanBusy) return;
-      if (!moveState || !endPoint) return;
+    function _restoreDynamicCells(snapshot) {
+      dynamicObstacleCells.clear();
+      snapshot.forEach(function (k) {
+        dynamicObstacleCells.add(k);
+      });
+    }
+
+    function _pathLength(poly) {
+      if (!poly || poly.length < 2) return Infinity;
+      let l = 0;
+      for (let i = 0; i < poly.length - 1; i++) {
+        l += Math.hypot(poly[i + 1].x - poly[i].x, poly[i + 1].z - poly[i].z);
+      }
+      return l;
+    }
+
+    function _mapRiskScore(poly) {
+      if (!poly || poly.length < 2) return Infinity;
+      let risk = 0;
+      const safe = WHEELCHAIR_BODY_WIDTH_M + WHEELCHAIR_SIDE_SAFETY_M;
+      for (let i = 0; i < poly.length; i++) {
+        const w = estimatePassageWidthAt(poly[i].x, poly[i].z, cellWalkableNav);
+        if (!Number.isFinite(w)) {
+          risk += 10;
+          continue;
+        }
+        if (w < safe) {
+          risk += 20 + (safe - w) * 40;
+        } else {
+          risk += Math.max(0, (PREFERRED_PASSAGE_WIDTH_M - w)) * 2.5;
+        }
+      }
+      return risk / Math.max(1, poly.length);
+    }
+
+    function _buildMapPathCandidate(si, gi) {
+      const gridPath = astarGrid4(si.i, si.j, gi.i, gi.j, cellWalkableNav);
+      if (!gridPath || gridPath.length < 2) return null;
+      const asPoly = gridPath.map(function (p) {
+        return { x: p.x, z: p.z };
+      });
+      const sx = robotGroup.position.x;
+      const sz = robotGroup.position.z;
+      asPoly[0] = { x: sx, z: sz };
+      const expanded = expandPathThroughGrid(asPoly, cellWalkableNav);
+      if (!expanded || expanded.length < 2) return null;
+      const length = _pathLength(expanded);
+      const risk = _mapRiskScore(expanded);
+      return {
+        points: expanded,
+        length: length,
+        risk: risk,
+        score: length + CANDIDATE_RISK_WEIGHT * risk,
+      };
+    }
+
+    function tryReplanAroundDetectedObstacle(scan, opts) {
+      const force = !!(opts && opts.force);
+      if (replanBusy) {
+        logFrameEvent("replan-skip", { reason: "busy" });
+        return;
+      }
+      if (!moveState || !endPoint) {
+        logFrameEvent("replan-skip", {
+          reason: "missing-state",
+          hasMoveState: !!moveState,
+          hasEndPoint: !!endPoint,
+        });
+        return;
+      }
       const near = scan.nearest;
       const fwd = scan.forwardClearanceM;
-      if (near == null || fwd == null) return;
-      if (fwd >= REPLAN_MIN_CLEARANCE_M) return;
-      if (near.distance >= REPLAN_MIN_CLEARANCE_M) return;
-      if (performance.now() - lastReplanTime < REPLAN_COOLDOWN_MS) return;
+      if (near == null || fwd == null) {
+        logFrameEvent("replan-skip", {
+          reason: "insufficient-scan",
+          hasNearest: !!near,
+          hasForward: fwd != null,
+        });
+        return;
+      }
+      // Doorways are valid traversable openings for the wheelchair.
+      if (!force && inDoorOpeningZone(near.point.x, near.point.z)) {
+        logFrameEvent("replan-skip", { reason: "near-hit-in-door-zone" });
+        return;
+      }
+      if (!force && fwd >= REPLAN_MIN_CLEARANCE_M) {
+        logFrameEvent("replan-skip", { reason: "forward-clearance-ok", fwd: +fwd.toFixed(3) });
+        return;
+      }
+      if (!force && near.distance >= REPLAN_MIN_CLEARANCE_M) {
+        logFrameEvent("replan-skip", {
+          reason: "nearest-clearance-ok",
+          nearest: +near.distance.toFixed(3),
+        });
+        return;
+      }
+      if (!force && performance.now() - lastReplanTime < REPLAN_COOLDOWN_MS) {
+        logFrameEvent("replan-skip", {
+          reason: "cooldown",
+          cooldownLeftMs: +Math.max(
+            0,
+            REPLAN_COOLDOWN_MS - (performance.now() - lastReplanTime)
+          ).toFixed(1),
+        });
+        return;
+      }
+      logFrameEvent(
+        "replan",
+        `triggered force=${force} near=${fmtNum(near.distance)}m fwd=${fmtNum(
+          fwd
+        )}m gap=${fmtNum(scan.forwardPassageWidthM)}m`
+      );
 
       replanBusy = true;
       const snapDyn = Array.from(dynamicObstacleCells);
@@ -2703,36 +3238,85 @@
       const si = worldToCell(sx, sz);
       const gi = worldToCell(gx, gz);
 
-      const gridPath = astarGrid4(si.i, si.j, gi.i, gi.j, cellWalkableNav);
-      if (!gridPath || gridPath.length < 2) {
-        dynamicObstacleCells.clear();
-        snapDyn.forEach(function (k) {
-          dynamicObstacleCells.add(k);
-        });
+      const candidates = [];
+      function tryCandidate(tag) {
+        const c = _buildMapPathCandidate(si, gi);
+        if (!c) return;
+        c.tag = tag;
+        candidates.push(c);
+      }
+
+      // Candidate A: current map state (already has near-point blocked)
+      tryCandidate("base");
+
+      // Candidate B..N: map-only alternatives by perturbing blocked zones around current obstacle.
+      const yaw = robotGroup.rotation.y || 0;
+      const fx = Math.sin(yaw);
+      const fz = Math.cos(yaw);
+      const lx = -fz;
+      const lz = fx;
+      const radii = [OBSTACLE_BLOCK_RADIUS_M, OBSTACLE_BLOCK_RADIUS_M + 0.16, OBSTACLE_BLOCK_RADIUS_M + 0.3];
+      const lateralOffsets = [-0.55, -0.32, 0.32, 0.55];
+      const forwardOffsets = [0.0, 0.28, 0.55];
+      for (let ri = 0; ri < radii.length; ri++) {
+        for (let li = 0; li < lateralOffsets.length; li++) {
+          for (let fi = 0; fi < forwardOffsets.length; fi++) {
+            _restoreDynamicCells(snapDyn);
+            const ox = near.point.x + lx * lateralOffsets[li] + fx * forwardOffsets[fi];
+            const oz = near.point.z + lz * lateralOffsets[li] + fz * forwardOffsets[fi];
+            markDynamicObstacleDisk(near.point.x, near.point.z, radii[ri]);
+            markDynamicObstacleDisk(ox, oz, Math.max(0.22, radii[ri] * 0.7));
+            tryCandidate(`r${ri}-l${li}-f${fi}`);
+          }
+        }
+      }
+
+      if (!candidates.length) {
+        _restoreDynamicCells(snapDyn);
         replanBusy = false;
-        setStatus("Replan failed: no alternate grid path. Move destination or Clear.");
+        setStatus("Replan failed: no map candidate path.");
+        logFrameEvent("replan", "failed no map candidate");
         return;
       }
 
-      const asPoly = gridPath.map(function (p) {
-        return { x: p.x, z: p.z };
+      candidates.sort(function (a, b) {
+        return a.score - b.score;
       });
-      asPoly[0] = { x: sx, z: sz };
-      const expanded = expandPathThroughGrid(asPoly, cellWalkableNav);
-      if (!expanded || expanded.length < 2) {
-        dynamicObstacleCells.clear();
-        snapDyn.forEach(function (k) {
-          dynamicObstacleCells.add(k);
-        });
-        replanBusy = false;
-        setStatus("Replan failed: path stitch.");
-        return;
+      const best = candidates[0];
+      logFrameEvent("replan-candidates", {
+        count: candidates.length,
+        bestTag: best.tag,
+        bestScore: +best.score.toFixed(3),
+        bestLen: +best.length.toFixed(3),
+        bestRisk: +best.risk.toFixed(3),
+      });
+
+      // Keep dynamic map state consistent with best candidate assumptions.
+      _restoreDynamicCells(snapDyn);
+      if (best.tag !== "base") {
+        // Reconstruct blocked zones for chosen variant.
+        const m = /r(\d+)-l(\d+)-f(\d+)/.exec(best.tag);
+        if (m) {
+          const ri = parseInt(m[1], 10);
+          const li = parseInt(m[2], 10);
+          const fi = parseInt(m[3], 10);
+          const ox = near.point.x + lx * lateralOffsets[li] + fx * forwardOffsets[fi];
+          const oz = near.point.z + lz * lateralOffsets[li] + fz * forwardOffsets[fi];
+          markDynamicObstacleDisk(near.point.x, near.point.z, radii[ri]);
+          markDynamicObstacleDisk(ox, oz, Math.max(0.22, radii[ri] * 0.7));
+        }
+      } else {
+        markDynamicObstacleDisk(near.point.x, near.point.z, OBSTACLE_BLOCK_RADIUS_M);
       }
 
       lastReplanTime = performance.now();
       applyNewPathFromPolyline(
-        expanded,
-        "Obstacle ahead — new route (" + expanded.length + " waypoints)."
+        best.points,
+        "Map replan — best candidate (" + best.points.length + " waypoints)."
+      );
+      logFrameEvent(
+        "replan",
+        `success tag=${best.tag} waypoints=${best.points.length} score=${best.score.toFixed(3)}`
       );
       replanBusy = false;
     }
@@ -2786,6 +3370,8 @@
       const tube = new THREE.TubeGeometry(curve, Math.max(8, pts.length * 3), 0.06, 8, false);
       const mat = new THREE.MeshStandardMaterial({ color: 0xd29922, emissive: 0x442200 });
       pathLine = new THREE.Mesh(tube, mat);
+      // Keep route visible in top/orbit view, hidden from wheelchair camera.
+      pathLine.layers.set(PATH_LAYER);
       scene.add(pathLine);
       const samples = sampleCurvePoints(pts);
       pathCurveSamples = samples;
@@ -2856,45 +3442,60 @@
     }
 
     function captureWheelchairViewToJpegBlob() {
+      const t0 = performance.now();
       return new Promise(function (resolve, reject) {
-        try {
-          const w = window.innerWidth;
-          const h = window.innerHeight;
-          const mainW = Math.max(1, Math.floor(w * VIEW_SPLIT));
-          const wheelW = Math.max(1, w - mainW);
-          wheelCam.aspect = wheelW / h;
-          wheelCam.updateProjectionMatrix();
-          const rt = ensureWheelRT(wheelW, h);
-          const prevClear = renderer.autoClear;
-          renderer.autoClear = true;
-          renderer.setRenderTarget(rt);
-          renderer.clear();
-          renderer.render(scene, wheelCam);
-          renderer.setRenderTarget(null);
-          renderer.autoClear = prevClear;
+        waitForWheelFrameReady()
+          .then(function () {
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+            const mainW = Math.max(1, Math.floor(w * VIEW_SPLIT));
+            const wheelW = Math.max(1, w - mainW);
+            logFrameEvent("capture", {
+              phase: "start",
+              fullW: w,
+              fullH: h,
+              wheelW: wheelW,
+              wheelH: h,
+            });
+            wheelCam.aspect = wheelW / h;
+            wheelCam.updateProjectionMatrix();
+            const rt = ensureWheelRT(wheelW, h);
+            const prevClear = renderer.autoClear;
+            renderer.autoClear = true;
+            renderer.setRenderTarget(rt);
+            renderer.clear();
+            renderer.render(scene, wheelCam);
+            renderer.setRenderTarget(null);
+            renderer.autoClear = prevClear;
 
-          const pixelBuffer = new Uint8Array(wheelW * h * 4);
-          renderer.readRenderTargetPixels(rt, 0, 0, wheelW, h, pixelBuffer);
-          flipPixelsVertically(pixelBuffer, wheelW, h);
+            const pixelBuffer = new Uint8Array(wheelW * h * 4);
+            renderer.readRenderTargetPixels(rt, 0, 0, wheelW, h, pixelBuffer);
+            flipPixelsVertically(pixelBuffer, wheelW, h);
 
-          const canvas2d = document.createElement("canvas");
-          canvas2d.width = wheelW;
-          canvas2d.height = h;
-          const ctx = canvas2d.getContext("2d");
-          const imgData = ctx.createImageData(wheelW, h);
-          imgData.data.set(pixelBuffer);
-          ctx.putImageData(imgData, 0, 0);
-          canvas2d.toBlob(
-            function (blob) {
-              if (blob) resolve(blob);
-              else reject(new Error("toBlob failed"));
-            },
-            "image/jpeg",
-            0.88
-          );
-        } catch (err) {
-          reject(err);
-        }
+            const canvas2d = document.createElement("canvas");
+            canvas2d.width = wheelW;
+            canvas2d.height = h;
+            const ctx = canvas2d.getContext("2d");
+            const imgData = ctx.createImageData(wheelW, h);
+            imgData.data.set(pixelBuffer);
+            ctx.putImageData(imgData, 0, 0);
+            canvas2d.toBlob(
+              function (blob) {
+                if (blob) {
+                  logFrameEvent("capture", {
+                    phase: "done",
+                    bytes: blob.size,
+                    elapsedMs: +(performance.now() - t0).toFixed(1),
+                  });
+                  resolve(blob);
+                }
+                else reject(new Error("toBlob failed"));
+              },
+              "image/jpeg",
+              0.88
+            );
+          })
+          .catch(reject);
       });
     }
 
@@ -2902,12 +3503,23 @@
       if (!inpVlaUrl) {
         return Promise.reject(new Error("VLA URL missing"));
       }
+      const t0 = performance.now();
       const base = inpVlaUrl.value.replace(/\/$/, "");
       const fd = new FormData();
       fd.append("frame", blob, "wheel.jpg");
+      logFrameEvent("vla", {
+        phase: "request-start",
+        url: base + "/process_frame",
+        bytes: blob ? blob.size : null,
+      });
       return fetch(base + "/process_frame", { method: "POST", body: fd })
         .then(function (r) {
           if (!r.ok) throw new Error("HTTP " + r.status);
+          logFrameEvent("vla", {
+            phase: "response-ok",
+            status: r.status,
+            elapsedMs: +(performance.now() - t0).toFixed(1),
+          });
           return r.blob();
         })
         .then(function (b) {
@@ -2919,12 +3531,18 @@
           if (vlaLiveStatus)
             vlaLiveStatus.textContent =
               "VLA overlay ok · " + new Date().toLocaleTimeString();
+          logFrameEvent("vla", {
+            phase: "overlay-received",
+            bytes: b.size,
+            totalElapsedMs: +(performance.now() - t0).toFixed(1),
+          });
           if (typeof onDone === "function") onDone();
         })
         .catch(function (e) {
           if (vlaLiveStatus)
             vlaLiveStatus.textContent =
               "VLA error: " + (e && e.message ? e.message : String(e));
+          logFrameEvent("vla", "error " + (e && e.message ? e.message : String(e)));
           throw e;
         });
     }
@@ -2944,53 +3562,8 @@
 
     function tick() {
       requestAnimationFrame(tick);
+      frameTickCount += 1;
       const dt = clock.getDelta();
-      if (moveState && moveState.samples) {
-        const { samples, lenInfo, speed } = moveState;
-        const vlaSync =
-          chkVlaLive &&
-          chkVlaLive.checked &&
-          vlaLiveLayer &&
-          vlaLiveLayer.classList.contains("active");
-        if (vlaSync) {
-          if (!vlaMoveInFlight) {
-            vlaMoveInFlight = true;
-            captureWheelchairViewToJpegBlob()
-              .then(function (blob) {
-                return sendFrameToVla(blob);
-              })
-              .then(function () {
-                vlaMoveInFlight = false;
-                if (!moveState || !moveState.samples) return;
-                const step = VLA_PATH_STEP_METERS;
-                moveState.dist = Math.min(moveState.dist + step, lenInfo.total);
-                if (moveState.dist >= lenInfo.total) {
-                  placeRobotOnPath(samples, lenInfo.total);
-                  moveState = null;
-                  setStatus("Wheelchair arrived (VLA stepped).");
-                } else {
-                  placeRobotOnPath(samples, moveState.dist);
-                  const pct = ((moveState.dist / lenInfo.total) * 100).toFixed(0);
-                  setStatus("VLA frame-by-frame · " + pct + "% along path");
-                }
-              })
-              .catch(function () {
-                vlaMoveInFlight = false;
-                stopRobotAnim();
-                setStatus("VLA gate failed — movement stopped.");
-              });
-          }
-        } else {
-          moveState.dist += speed * dt;
-          if (moveState.dist >= lenInfo.total) {
-            placeRobotOnPath(samples, lenInfo.total);
-            moveState = null;
-            setStatus("Wheelchair arrived.");
-          } else {
-            placeRobotOnPath(samples, moveState.dist);
-          }
-        }
-      }
       const w = window.innerWidth;
       const h = window.innerHeight;
       const mainW = Math.max(1, Math.floor(w * VIEW_SPLIT));
@@ -3002,15 +3575,145 @@
         robotGroup.updateMatrixWorld(true);
         wheelchairCameraSensor.scan();
         if (
-          moveState &&
-          moveState.samples &&
-          !replanBusy &&
-          endPoint &&
+          frameTickCount % 20 === 0 &&
           wheelchairCameraSensor.lastScan
         ) {
-          tryReplanAroundDetectedObstacle(wheelchairCameraSensor.lastScan);
+          const s = wheelchairCameraSensor.lastScan;
+          logFrameEvent(
+            "frame",
+            `fwd=${fmtNum(s.forwardClearanceM)}m gap=${fmtNum(
+              s.forwardPassageWidthM
+            )}m nearest=${fmtNum(s.nearest ? s.nearest.distance : null)}m`
+          );
         }
       }
+      if (moveState && moveState.samples) {
+        const { samples, lenInfo, speed } = moveState;
+        const vlaSync =
+          chkVlaLive &&
+          chkVlaLive.checked &&
+          vlaLiveLayer &&
+          vlaLiveLayer.classList.contains("active");
+        logFrameEvent("motion", {
+          tick: frameTickCount,
+          mode: vlaSync ? "vla-lockstep" : "local-continuous",
+          dist: +moveState.dist.toFixed(3),
+          total: +lenInfo.total.toFixed(3),
+          speed: +speed.toFixed(3),
+          pendingAssetLoads: pendingAssetLoads,
+          replanBusy: replanBusy,
+          vlaMoveInFlight: vlaMoveInFlight,
+        });
+        if (vlaSync) {
+          if (!vlaMoveInFlight) {
+            vlaMoveInFlight = true;
+            captureWheelchairViewToJpegBlob()
+              .then(function (blob) {
+                return sendFrameToVla(blob);
+              })
+              .then(function () {
+                vlaMoveInFlight = false;
+                if (!moveState || !moveState.samples) return;
+                const step = VLA_PATH_STEP_METERS;
+                const riskReason = shouldStopAndReplanNow(
+                  wheelchairCameraSensor.lastScan,
+                  step
+                );
+                if (riskReason) {
+                  const s = wheelchairCameraSensor.lastScan;
+                  logFrameEvent("decision", {
+                    action: "stop-and-replan",
+                    reason: riskReason,
+                    fwd: s ? +((s.forwardClearanceM ?? NaN)).toFixed(3) : null,
+                    gap: s ? +((s.forwardPassageWidthM ?? NaN)).toFixed(3) : null,
+                    nearest: s && s.nearest ? +(s.nearest.distance).toFixed(3) : null,
+                  });
+                  setStatus("Stop + replan: " + riskReason);
+                  if (wheelchairCameraSensor.lastScan) {
+                    tryReplanAroundDetectedObstacle(wheelchairCameraSensor.lastScan, {
+                      force: true,
+                    });
+                  }
+                  return;
+                }
+                logFrameEvent("decision", {
+                  action: "advance",
+                  step: +step.toFixed(3),
+                  prevDist: +moveState.dist.toFixed(3),
+                });
+                moveState.dist = Math.min(moveState.dist + step, lenInfo.total);
+                if (moveState.dist >= lenInfo.total) {
+                  placeRobotOnPath(samples, lenInfo.total);
+                  moveState = null;
+                  setStatus("Wheelchair arrived (VLA stepped).");
+                } else {
+                  placeRobotOnPath(samples, moveState.dist);
+                  const pct = ((moveState.dist / lenInfo.total) * 100).toFixed(0);
+                  setStatus("VLA frame-by-frame · " + pct + "% along path");
+                }
+              })
+              .catch(function (e) {
+                vlaMoveInFlight = false;
+                const msg = e && e.message ? e.message : "";
+                if (msg.indexOf("FRAME_NOT_READY") === 0) {
+                  setStatus("Waiting for full wheelchair frame load before next VLA step...");
+                  return;
+                }
+                stopRobotAnim();
+                setStatus("VLA gate failed — movement stopped.");
+              });
+          }
+        } else {
+          const step = speed * dt;
+          const riskReason = shouldStopAndReplanNow(
+            wheelchairCameraSensor.lastScan,
+            step
+          );
+          if (riskReason) {
+            const s = wheelchairCameraSensor.lastScan;
+            logFrameEvent("decision", {
+              action: "stop-and-replan",
+              reason: riskReason,
+              fwd: s ? +((s.forwardClearanceM ?? NaN)).toFixed(3) : null,
+              gap: s ? +((s.forwardPassageWidthM ?? NaN)).toFixed(3) : null,
+              nearest: s && s.nearest ? +(s.nearest.distance).toFixed(3) : null,
+            });
+            setStatus("Stop + replan: " + riskReason);
+            if (wheelchairCameraSensor.lastScan) {
+              tryReplanAroundDetectedObstacle(wheelchairCameraSensor.lastScan, {
+                force: true,
+              });
+            }
+          } else {
+            logFrameEvent("decision", {
+              action: "advance",
+              step: +step.toFixed(3),
+              prevDist: +moveState.dist.toFixed(3),
+            });
+            moveState.dist += step;
+          }
+          if (moveState.dist >= lenInfo.total) {
+            placeRobotOnPath(samples, lenInfo.total);
+            moveState = null;
+            setStatus("Wheelchair arrived.");
+          } else {
+            placeRobotOnPath(samples, moveState.dist);
+          }
+        }
+      }
+      if (
+        robotGroup.visible &&
+        moveState &&
+        moveState.samples &&
+        !replanBusy &&
+        endPoint &&
+        wheelchairCameraSensor.lastScan
+      ) {
+        tryReplanAroundDetectedObstacle(wheelchairCameraSensor.lastScan);
+      }
+
+      camera.layers.enable(PATH_LAYER);
+      wheelCam.layers.disable(PATH_LAYER);
 
       renderer.setScissorTest(true);
       renderer.clear();

@@ -35,7 +35,8 @@ class GroundingDinoDetector:
         self.track_max_missed = max(0, int(cfg.get("track_max_missed", 3)))
         self.track_score_decay = float(cfg.get("track_score_decay", 0.92))
         self.track_min_score = float(cfg.get("track_min_score", 0.2))
-        self.min_score = float(cfg.get("min_score", 0.0))
+        # Keep final outputs aligned with the detector threshold unless overridden explicitly.
+        self.min_score = float(cfg.get("min_score", self.box_threshold))
 
         self.processor = None
         self.model = None

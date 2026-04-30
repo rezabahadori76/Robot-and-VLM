@@ -19,7 +19,7 @@ if [[ ! -x "$PY_VLA" ]]; then
 fi
 
 cd "$ROBOT_DIR"
-python3 -m http.server "$ROBOT_PORT" --bind 0.0.0.0 &
+python3 serve_robot.py "$ROBOT_PORT" --bind 0.0.0.0 &
 PID_ROBOT=$!
 
 cd "$VLA_DIR"

@@ -123,14 +123,14 @@ chmod +x start_stack.sh
 
 این کار:
 
-1. **`python3 -m http.server`** را روی **`ROBOT_PORT`** (پیش‌فرض **8765**) با روت **`Robot/`** بالا می‌آورد.
+1. **`python3 serve_robot.py`** را روی **`ROBOT_PORT`** (پیش‌فرض **8765**) با روت **`Robot/`** بالا می‌آورد (هدر **no-store** برای HTML/JS تا کش مرورگر نسخهٔ قدیمی نشان ندهد).
 2. **`VLA/scripts/live_frame_server.py`** را روی **`VLA_PORT`** (پیش‌فرض **8787**) اجرا می‌کند؛ در صورت وجود، از **`VLA/.venv/bin/python3`** استفاده می‌کند.
 
 **اجرای دستی (بدون اسکریپت):**
 
 ```bash
 # ترمینال 1 — از ریشهٔ ریپو
-cd Robot && python3 -m http.server 8765 --bind 0.0.0.0
+cd Robot && python3 serve_robot.py 8765 --bind 0.0.0.0
 
 # ترمینال 2 — از پوشهٔ VLA
 cd VLA && source .venv/bin/activate

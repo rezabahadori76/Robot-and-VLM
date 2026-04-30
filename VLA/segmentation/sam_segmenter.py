@@ -32,6 +32,8 @@ class SAMSegmenter:
         self.checkpoint = cfg.get("checkpoint", "sam_vit_h_4b8939.pth")
         self.device = cfg.get("device", "cuda")
         self.use_real_model = bool(cfg.get("use_real_model", True))
+        # Minimum SAM mask score (predictor scores[0]) to emit a segment; 0 = no filter.
+        self.mask_score_threshold = float(cfg.get("mask_score_threshold", 0.0))
 
         self.predictor = None
         self.is_real_backend = False
@@ -86,11 +88,14 @@ class SAMSegmenter:
                     box=box[None, :],
                     multimask_output=False,
                 )
+                score = float(scores[0])
+                if score < self.mask_score_threshold:
+                    continue
                 mask = masks[0].astype(np.uint8)
                 outputs.append(
                     SegmentationMask(
                         label=det.label,
-                        score=float(scores[0]),
+                        score=score,
                         mask_rle=_binary_mask_to_rle(mask),
                         bbox_xyxy=det.bbox_xyxy,
                     )
@@ -105,5 +110,6 @@ class SAMSegmenter:
             "backend": self.backend_name,
             "real_backend_active": self.is_real_backend,
             "checkpoint": self.checkpoint,
+            "mask_score_threshold": self.mask_score_threshold,
             "init_error": self.init_error,
         }

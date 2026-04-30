@@ -69,6 +69,7 @@ def render_overlay_on_bgr(
     When ``draw_semantic_label`` is False, no VLM/room caption is drawn (detection+SAM only).
     """
     img = img_bgr.copy()
+    seg_label_anchors: list[tuple[str, float, tuple[int, int, int], tuple[int, int]]] = []
     if draw_masks:
         # Color by semantic class name so e.g. "floor" ≠ "wall" even when order changes.
         for seg in state.segments:
@@ -76,6 +77,25 @@ def render_overlay_on_bgr(
             b, g, r = _color_bgr_for_label(seg.label)
             color = np.array([b, g, r], dtype=np.uint8)
             img[mask == 1] = (0.52 * img[mask == 1] + 0.48 * color).astype(np.uint8)
+            # Segment-first overlay: outline + label anchor from segment geometry.
+            mask_u8 = (mask * 255).astype(np.uint8)
+            contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                cv2.drawContours(img, contours, -1, (b, g, r), max(1, int(box_line_thickness)))
+                largest = max(contours, key=cv2.contourArea)
+                m = cv2.moments(largest)
+                if m["m00"] > 1e-6:
+                    cx = int(m["m10"] / m["m00"])
+                    cy = int(m["m01"] / m["m00"])
+                else:
+                    ys, xs = np.where(mask == 1)
+                    if len(xs) == 0:
+                        continue
+                    cx, cy = int(xs.mean()), int(ys.mean())
+                seg_label_anchors.append((seg.label, float(seg.score), (b, g, r), (cx, cy)))
+
+    # Segment-first policy: detection boxes are disabled.
+    draw_boxes = False
 
     if draw_boxes:
         t = max(1, int(box_line_thickness))
@@ -88,6 +108,20 @@ def render_overlay_on_bgr(
                 img,
                 f'{det.label}:{det.score:.2f}',
                 (x1, max(12, y1 - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                col,
+                lt,
+            )
+    else:
+        # No object boxes: labels are drawn on segment anchors.
+        lt = max(1, int(label_font_thickness))
+        for label, score, col, (cx, cy) in seg_label_anchors:
+            text = f"{label}:{score:.2f}"
+            cv2.putText(
+                img,
+                text,
+                (max(4, cx - 42), max(12, cy - 6)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
                 col,

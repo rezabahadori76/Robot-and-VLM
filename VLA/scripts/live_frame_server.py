@@ -204,7 +204,8 @@ def build_app(cfg: dict) -> FastAPI:
             small,
             state,
             draw_masks=bool(viz.get("draw_masks", True)),
-            draw_boxes=bool(viz.get("draw_boxes", True)),
+            # Segment-only visualization policy: never render detection boxes in live bridge.
+            draw_boxes=False,
             box_line_thickness=int(viz.get("overlay_box_thickness", 2)),
             label_font_thickness=int(viz.get("overlay_label_thickness", 1)),
             draw_semantic_label=bool(viz.get("show_semantic_label", False)),
