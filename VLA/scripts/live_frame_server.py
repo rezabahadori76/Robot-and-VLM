@@ -124,11 +124,11 @@ def build_app(cfg: dict) -> FastAPI:
         if "text/html" in accept:
             return HTMLResponse(
                 f"""<!DOCTYPE html>
-<html lang="fa" dir="rtl">
+<html lang="en" dir="ltr">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>VLA API — اینجا رابط وب نیست</title>
+  <title>VLA API — UI is on another port</title>
   <style>
     body {{ font-family: system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem;
       background: #0d1117; color: #e6edf3; line-height: 1.6; }}
@@ -138,12 +138,12 @@ def build_app(cfg: dict) -> FastAPI:
   </style>
 </head>
 <body>
-  <h1>پورت 8787 = فقط API</h1>
-  <p>این آدرس سرور <strong>پردازش فریم</strong> است (Grounding DINO + SAM)، نه صفحهٔ سه‌بعدی ویلچر.</p>
-  <p class="box">برای دیدن خانه و ویلچر، این را در مرورگر باز کن:<br/>
+  <h1>Port 8787 = API only</h1>
+  <p>This endpoint serves <strong>frame inference</strong> (Grounding DINO + SAM), not the wheelchair 3D UI.</p>
+  <p class="box">Open the demo UI in your browser at:<br/>
     <a href="{robot_public_url}/">{robot_public_url}/</a>
   </p>
-  <p>در پنل HUD همان دمو، فیلد «VLA API» باید همین آدرس باشد: <code>http://127.0.0.1:8787</code></p>
+  <p>Inside the demo HUD, set <code>VLA API</code> to: <code>http://127.0.0.1:8787</code></p>
   <p><small>JSON: <a href="/?format=json">/?format=json</a> · <a href="/health">/health</a></small></p>
 </body>
 </html>"""

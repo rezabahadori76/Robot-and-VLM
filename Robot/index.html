@@ -330,6 +330,7 @@
   <script>
     /* global THREE */
     (function () {
+    try {
     if (typeof THREE === "undefined") {
       document.getElementById("status").textContent =
         "Error: three.min.js must sit next to index.html.";
@@ -545,8 +546,8 @@
     });
 
     /** Navigation cushion around each door opening (collision exempt) */
-    function inDoorOpeningZone(x, z) {
-      const m = NAV_MARGIN;
+    function inDoorOpeningZone(x, z, extraMargin) {
+      const m = NAV_MARGIN + (extraMargin || 0);
       for (let di = 0; di < DOOR_DEFS.length; di++) {
         const d = DOOR_DEFS[di];
         if (d.kind === "v") {
@@ -784,8 +785,25 @@
     }
 
     let staticNavBlockedKeysCache = null;
+    let staticNavBlockedKeysPromise = null;
 
-    /** Lightweight static occupancy for Python planner (no expensive object-ray clearance sweep). */
+    function hasQuickWallClearanceAt(x, z, clearanceM) {
+      // Door openings are explicitly traversable. Use a relaxed clearance radius there,
+      // matching the intent of cellHasWallClearance() so we don't accidentally seal doorways.
+      const inDoor = inDoorOpeningZone(x, z, 0.03);
+      const base = Math.max(0.08, clearanceM || 0.3);
+      const r = inDoor ? Math.max(0.12, base * 0.62) : base;
+      const dirs = 12;
+      for (let i = 0; i < dirs; i++) {
+        const a = (i / dirs) * Math.PI * 2;
+        const px = x + Math.cos(a) * r;
+        const pz = z + Math.sin(a) * r;
+        if (isBlocked(px, pz)) return false;
+      }
+      return true;
+    }
+
+    /** Lightweight static occupancy for Python planner (fast; avoids UI stalls). */
     function collectStaticNavBlockedKeys() {
       if (staticNavBlockedKeysCache && staticNavBlockedKeysCache.length) {
         return staticNavBlockedKeysCache;
@@ -794,13 +812,40 @@
       for (let i = 0; i < nx; i++) {
         for (let j = 0; j < nz; j++) {
           const w = cellToWorld(i, j);
-          if (isBlocked(w.x, w.z) || !cellHasWallClearance(i, j, WALL_PATH_CLEARANCE_M)) {
+          if (
+            isBlocked(w.x, w.z) ||
+            !hasQuickWallClearanceAt(w.x, w.z, WALL_PATH_CLEARANCE_M)
+          ) {
             keys.push(i + "," + j);
           }
         }
       }
       staticNavBlockedKeysCache = keys;
       return staticNavBlockedKeysCache;
+    }
+
+    function getStaticNavBlockedKeysAsync() {
+      if (staticNavBlockedKeysCache && staticNavBlockedKeysCache.length) {
+        return Promise.resolve(staticNavBlockedKeysCache);
+      }
+      if (staticNavBlockedKeysPromise) return staticNavBlockedKeysPromise;
+      staticNavBlockedKeysPromise = new Promise(function (resolve) {
+        // Yield one frame so first UI paint is not blocked by map scan.
+        setTimeout(function () {
+          try {
+            const t0 = performance.now();
+            const keys = collectStaticNavBlockedKeys();
+            logFrameEvent("map-cache", {
+              blockedCells: keys.length,
+              buildMs: +(performance.now() - t0).toFixed(1),
+            });
+            resolve(keys);
+          } catch (e) {
+            resolve([]);
+          }
+        }, 0);
+      });
+      return staticNavBlockedKeysPromise;
     }
 
     // Emergency map walkability: relaxed but still keeps wall/boundary clearance.
@@ -1366,7 +1411,7 @@
     } catch (e) {}
     ROBOT_HOUSE.mapPlanner = {
       collectStaticNavBlockedKeys: collectStaticNavBlockedKeys,
-      plannerEndpoint: "/api/plan",
+      plannerEndpoint: "api/plan",
     };
 
     // --- Three.js scene
@@ -3391,65 +3436,78 @@
         }
       }
       const dynBlocked = Array.from(dynamicObstacleCells);
-      const basePayload = {
-        bounds: OUTER_BOUNDS,
-        cell_size: CELL,
-        start: { x: sx, z: sz },
-        goal: { x: gx, z: gz },
-        blocked_cells: collectStaticNavBlockedKeys(),
-        dynamic_blocked_cells: dynBlocked,
-        detections: detPayload,
-        sensor_context: {
-          nearestDistanceM: scan && scan.nearest ? scan.nearest.distance : null,
-          forwardClearanceM: scan ? scan.forwardClearanceM : null,
-          forwardPassageWidthM: scan ? scan.forwardPassageWidthM : null,
-          rayCount: scan && scan.rays ? scan.rays.length : 0,
-          scanTime: scan && scan.time ? scan.time : null,
-        },
-        map_context: {
-          roomCount: ROOMS.length,
-          doorCount: NAV_DOORS.length,
-          source: "robot-index-map",
-        },
-        detection_base_radius: OBSTACLE_BLOCK_RADIUS_M,
-        min_clearance_m: Math.max(WALL_PATH_CLEARANCE_M, WHEELCHAIR_BODY_WIDTH_M * 0.5 + WHEELCHAIR_SIDE_SAFETY_M),
-        algorithms: ["dijkstra", "astar", "weighted_astar", "astar_low_risk_bias"],
-        max_alternatives: 4,
-        avoid_paths: lastPathFlat && lastPathFlat.length >= 2 ? [lastPathFlat] : [],
-        novelty_weight: 0.46,
-        compress_path: true,
-      };
-      function fetchPlan(payload, timeoutMs) {
-        const ac = new AbortController();
-        const tid = setTimeout(function () {
-          ac.abort("planner-timeout");
-        }, timeoutMs || 12000);
-        return fetch("/api/plan", {
+      function buildPayload(blockedKeys) {
+        return {
+          bounds: OUTER_BOUNDS,
+          cell_size: CELL,
+          start: { x: sx, z: sz },
+          goal: { x: gx, z: gz },
+          blocked_cells: blockedKeys || [],
+          dynamic_blocked_cells: dynBlocked,
+          detections: detPayload,
+          sensor_context: {
+            nearestDistanceM: scan && scan.nearest ? scan.nearest.distance : null,
+            forwardClearanceM: scan ? scan.forwardClearanceM : null,
+            forwardPassageWidthM: scan ? scan.forwardPassageWidthM : null,
+            rayCount: scan && scan.rays ? scan.rays.length : 0,
+            scanTime: scan && scan.time ? scan.time : null,
+          },
+          map_context: {
+            roomCount: ROOMS.length,
+            doorCount: NAV_DOORS.length,
+            source: "robot-index-map",
+          },
+          detection_base_radius: OBSTACLE_BLOCK_RADIUS_M,
+          // NOTE: blocked_cells already encode wall clearance, and detections encode object keepout.
+          // Setting an additional min_clearance_m here double-counts clearance and can create no-path.
+          min_clearance_m: 0.0,
+          algorithms: ["dijkstra", "astar", "weighted_astar", "astar_low_risk_bias"],
+          max_alternatives: 4,
+          avoid_paths: lastPathFlat && lastPathFlat.length >= 2 ? [lastPathFlat] : [],
+          novelty_weight: 0.46,
+          compress_path: true,
+        };
+      }
+      function fetchPlan(payload) {
+        const payloadBytes = JSON.stringify(payload).length;
+        const t0 = performance.now();
+        logFrameEvent("planner-http", {
+          phase: "request",
+          bytes: payloadBytes,
+        });
+        return fetch(ROBOT_HOUSE.mapPlanner.plannerEndpoint || "api/plan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
-          signal: ac.signal,
         })
           .then(function (r) {
-            clearTimeout(tid);
             if (!r.ok) throw new Error("http " + r.status);
             return r.json();
           })
-          .finally(function () {
-            clearTimeout(tid);
+          .then(function (json) {
+            logFrameEvent("planner-http", {
+              phase: "response",
+              elapsedMs: +(performance.now() - t0).toFixed(1),
+              ok: !!(json && json.ok),
+              reason: json && json.reason ? json.reason : null,
+            });
+            return json;
           });
       }
-      fetchPlan(basePayload, 12000)
+      getStaticNavBlockedKeysAsync()
+        .then(function (blockedKeys) {
+          return fetchPlan(buildPayload(blockedKeys));
+        })
         .then(function (res) {
           if (!res || !res.ok || !res.path || res.path.length < 2) {
             // Still Python-only: retry with relaxed-yet-valid planner params.
-            const relaxed = Object.assign({}, basePayload, {
+            const relaxed = Object.assign({}, buildPayload(staticNavBlockedKeysCache || []), {
               dynamic_blocked_cells: [],
               novelty_weight: 0.2,
               detection_base_radius: Math.max(0.28, OBSTACLE_BLOCK_RADIUS_M * 0.78),
               max_alternatives: 6,
             });
-            return fetchPlan(relaxed, 12000).then(function (r2) {
+            return fetchPlan(relaxed).then(function (r2) {
               if (!r2 || !r2.ok || !r2.path || r2.path.length < 2) {
                 const reason = (r2 && (r2.reason || r2.detail)) || (res && (res.reason || res.detail)) || "no-path-from-python";
                 throw new Error(reason);
@@ -3472,13 +3530,6 @@
         })
         .catch(function (err) {
           let reason = err && err.message ? err.message : String(err);
-          if (
-            reason === "The user aborted a request." ||
-            reason === "signal is aborted without reason" ||
-            reason === "planner-timeout"
-          ) {
-            reason = "python-planner-timeout";
-          }
           logFrameEvent("replan-python-skip", {
             reason: reason,
           });
@@ -4252,6 +4303,8 @@
     });
 
     setStatus("Choose start and destination rooms, then Show path or Move wheelchair.");
+    // Warm cache once after first render so first "Show path" is responsive.
+    getStaticNavBlockedKeysAsync();
 
     ROBOT_HOUSE.vlaLiveBridge = {
       captureOnce: function () {
@@ -4279,6 +4332,19 @@
         cooldownMs: REPLAN_COOLDOWN_MS,
       },
     };
+    } catch (err) {
+      try {
+        const st = document.getElementById("status");
+        if (st) {
+          st.textContent =
+            "Startup error: " +
+            (err && err.message ? err.message : String(err));
+        }
+      } catch (_) {}
+      try {
+        console.error("Robot app startup error", err);
+      } catch (_) {}
+    }
     })();
   </script>
 </body>
